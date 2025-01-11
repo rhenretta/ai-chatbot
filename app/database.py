@@ -4,13 +4,17 @@ import json
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 from datetime import datetime
+import os
 
 class VectorStore:
-    def __init__(self, host: str = "localhost", port: int = 6379, db: int = 0):
+    def __init__(self, host: str = None, port: int = 6379, db: int = 0):
         """Initialize Redis connections with proper configuration."""
+        # Get Redis host from environment variable or use default
+        self.host = host or os.getenv("REDIS_HOST", "localhost")
+        
         # Configure Redis client with connection pooling
         self.redis_client = redis.Redis(
-            host=host,
+            host=self.host,
             port=port,
             db=db,
             decode_responses=False,  # Changed to False to handle binary data properly
@@ -20,7 +24,7 @@ class VectorStore:
         
         # Configure async Redis client
         self.redis_async_client = aioredis.Redis(
-            host=host,
+            host=self.host,
             port=port,
             db=db,
             decode_responses=False,  # Changed to False to handle binary data properly
