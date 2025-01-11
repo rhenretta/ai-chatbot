@@ -11,6 +11,7 @@
         <header>
             <h1>AI Memory Chatbot</h1>
             <div class="upload-section">
+                <p class="vector-count">Stored memories: {{ vector_count }}</p>
                 <form id="uploadForm" enctype="multipart/form-data">
                     <input type="file" id="conversationFile" accept=".json,.zip">
                     <button type="submit">Upload Conversation History</button>
@@ -80,7 +81,7 @@
                                 const progress = (data.processed / data.total * 100).toFixed(1);
                                 progressBar.style.width = `${progress}%`;
                                 progressText.textContent = `${progress}% (${data.processed}/${data.total})`;
-                                statusDiv.textContent = `Processing... Success: ${data.success_count}, Errors: ${data.error_count}`;
+                                statusDiv.textContent = `Processing... Success: ${data.success_count}, Skipped: ${data.skipped_count}, Errors: ${data.error_count}`;
                             } else if (data.status === 'complete') {
                                 progressBar.style.width = '100%';
                                 progressText.textContent = '100%';

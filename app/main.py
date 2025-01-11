@@ -1,17 +1,20 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
 import json
 import os
-import zipfile
-import io
 from datetime import datetime
+from typing import Optional, Dict, Any, AsyncGenerator
 from dotenv import load_dotenv
+import asyncio
+from sse_starlette.sse import EventSourceResponse
 from .embeddings import EmbeddingsManager
 from .database import VectorStore
 from .chat_processor import ChatProcessor
+from .models import ChatRequest, ProcessingStats, UploadResult
+import zipfile
+from io import BytesIO
 
 # Load environment variables
 load_dotenv()
@@ -33,156 +36,128 @@ vector_store = VectorStore()
 embeddings_manager = EmbeddingsManager(api_key)
 chat_processor = ChatProcessor(api_key, vector_store, embeddings_manager)
 
-class ChatMessage(BaseModel):
-    message: str
-
-def extract_text_from_content(content):
-    """Extract text from various content formats."""
-    if isinstance(content, str):
-        return content
-    elif isinstance(content, dict):
-        if "parts" in content:
-            parts = content["parts"]
-            if isinstance(parts, list):
-                return " ".join(str(part) for part in parts if isinstance(part, (str, int, float)))
-        elif "text" in content:
-            return content["text"]
-    return ""
-
-def process_chatgpt_conversation(conversation: dict) -> dict:
-    """Process a ChatGPT conversation and return structured data."""
-    messages = []
-    
-    # Extract messages from the conversation
-    for message in conversation.get("mapping", {}).values():
-        if message.get("message") and isinstance(message["message"], dict):
-            msg_content = message["message"].get("content", {})
-            text = extract_text_from_content(msg_content)
-            
-            if text:  # Only add messages with actual content
-                role = message["message"].get("author", {}).get("role", "user")
-                create_time = message["message"].get("create_time", 0)
-                
-                # Convert Unix timestamp to ISO format
-                timestamp = datetime.fromtimestamp(create_time).isoformat() if create_time else datetime.now().isoformat()
-                
-                messages.append({
-                    "text": text,
-                    "role": role,
-                    "timestamp": timestamp
-                })
-    
-    return {
-        "conversation_id": conversation.get("id", "unknown"),
-        "messages": messages
-    }
-
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    # Get initial memory stats
+    stats = vector_store.get_memory_stats()
+    return templates.TemplateResponse("chat.html", {
+        "request": request,
+        "initial_stats": stats
+    })
 
 @app.post("/chat")
-async def chat(message: ChatMessage):
+async def chat(request: ChatRequest):
     try:
-        response = chat_processor.process_message(message.message)
-        return {"response": response}
+        response, stats = chat_processor.process_message(
+            conversation_id=request.conversation_id,
+            message=request.message,
+            return_stats=True
+        )
+        return {
+            "response": response,
+            "conversation_id": request.conversation_id,
+            "memory_count": stats.get("memory_count", 0),
+            "context_count": stats.get("context_count", 0),
+            "context": stats.get("context", "")  # Include context in response
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-async def process_upload_stream(file_content: bytes, filename: str):
-    """Generator function for processing uploads and yielding status updates."""
-    try:
-        processed_count = 0
-        total_count = 0
-        errors = []
-        
-        if filename.endswith('.zip'):
-            # Process zip file
-            with zipfile.ZipFile(io.BytesIO(file_content)) as zip_ref:
-                # Look for conversations.json
-                if "conversations.json" in zip_ref.namelist():
-                    conversations_data = json.loads(zip_ref.read("conversations.json"))
-                    total_count = len(conversations_data)
-                    
-                    # Process each conversation
-                    for idx, conversation in enumerate(conversations_data):
-                        try:
-                            # Convert the conversation to our format
-                            processed_data = process_chatgpt_conversation(conversation)
-                            
-                            if processed_data["messages"]:  # Only process if there are messages
-                                # Process and store embeddings
-                                chunks = embeddings_manager.process_chatgpt_export(processed_data)
-                                
-                                for i, chunk in enumerate(chunks):
-                                    vector_store.add_vector(
-                                        f"{processed_data['conversation_id']}_{i}",
-                                        chunk["embedding"],
-                                        {
-                                            "text": chunk["text"],
-                                            "conversation_id": chunk["conversation_id"],
-                                            "role": chunk["role"],
-                                            "timestamp": chunk["timestamp"]
-                                        }
-                                    )
-                                processed_count += 1
-                        except Exception as e:
-                            errors.append(f"Error in conversation {idx + 1}: {str(e)}")
-                            continue
-                        
-                        # Send progress update every 10 conversations
-                        if (idx + 1) % 10 == 0:
-                            yield json.dumps({
-                                "status": "processing",
-                                "processed": idx + 1,
-                                "total": total_count,
-                                "success_count": processed_count,
-                                "error_count": len(errors)
-                            }) + "\n"
-                    
-                    # Send final status
-                    yield json.dumps({
-                        "status": "complete",
-                        "message": f"Successfully processed {processed_count} out of {total_count} conversations",
-                        "errors": errors[:10] if errors else []
-                    }) + "\n"
-                else:
-                    yield json.dumps({
-                        "status": "error",
-                        "message": "No conversations.json found in zip file"
-                    }) + "\n"
-        else:
-            # Process single JSON file
-            conversation_data = json.loads(file_content)
-            chunks = embeddings_manager.process_chatgpt_export(conversation_data)
-            
-            for i, chunk in enumerate(chunks):
-                vector_store.add_vector(
-                    f"{conversation_data['conversation_id']}_{i}",
-                    chunk["embedding"],
-                    {
-                        "text": chunk["text"],
-                        "conversation_id": chunk["conversation_id"],
-                        "role": chunk["role"],
-                        "timestamp": chunk["timestamp"]
-                    }
-                )
-            
-            yield json.dumps({
-                "status": "complete",
-                "message": "Conversation history uploaded and processed successfully"
-            }) + "\n"
-            
-    except Exception as e:
-        yield json.dumps({
-            "status": "error",
-            "message": str(e)
-        }) + "\n"
-
 @app.post("/upload")
-async def upload_conversation(file: UploadFile = File(...)):
-    content = await file.read()
-    return StreamingResponse(
-        process_upload_stream(content, file.filename),
-        media_type="text/event-stream"
-    )
+async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
+    try:
+        content = await file.read()
+        
+        if file.filename.endswith('.zip'):
+            # Handle ZIP file
+            with zipfile.ZipFile(BytesIO(content)) as zip_ref:
+                # Look for conversations.json
+                if 'conversations.json' not in zip_ref.namelist():
+                    raise HTTPException(status_code=400, detail="No conversations.json found in ZIP file")
+                
+                # Read and parse conversations.json
+                with zip_ref.open('conversations.json') as f:
+                    conversations = json.load(f)
+        else:
+            # Handle direct JSON upload
+            try:
+                conversations = json.loads(content)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid JSON format")
+        
+        # Initialize stats for all conversations
+        stats = ProcessingStats()
+        
+        # Process each conversation
+        results = []
+        if isinstance(conversations, list):
+            stats.total_conversations = len(conversations)
+            for conv in enumerate(conversations):
+                stats.start_conversation(len(conversations))
+                conversation_id, _ = chat_processor.process_conversation_upload(conv, stats)
+                results.append({"conversation_id": conversation_id})
+                
+                # Send progress update
+                progress = stats.to_dict()
+                print(f"Processing progress: {progress}")  # Debug log
+        else:
+            stats.total_conversations = 1
+            stats.start_conversation(1)
+            conversation_id, _ = chat_processor.process_conversation_upload(conversations, stats)
+            results.append({"conversation_id": conversation_id})
+        
+        # Get overall memory stats
+        memory_stats = vector_store.get_memory_stats()
+        
+        return {
+            "status": "success",
+            "results": results,
+            "memory_stats": memory_stats
+        }
+        
+    except Exception as e:
+        print(f"Upload error: {str(e)}")  # Debug log
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/upload-progress")
+async def upload_progress(request: Request) -> EventSourceResponse:
+    async def event_generator():
+        while True:
+            # Get current progress from Redis
+            stats = vector_store.get_memory_stats()
+            yield {
+                "event": "progress",
+                "data": json.dumps({
+                    "memory_stats": stats
+                })
+            }
+            await asyncio.sleep(1)  # Update every second
+            
+            if await request.is_disconnected():
+                break
+                
+    return EventSourceResponse(event_generator())
+
+@app.get("/conversation/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    try:
+        history = vector_store.get_conversation_history(conversation_id)
+        memory_count = len(vector_store.get_all_memories())
+        context_count = len([m for m in history if m.get("used_in_context", False)])
+        return JSONResponse({
+            "conversation_id": conversation_id,
+            "messages": history,
+            "memory_count": memory_count,
+            "context_count": context_count
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/stats")
+async def get_stats():
+    """Get current memory and conversation statistics."""
+    try:
+        stats = vector_store.get_memory_stats()
+        return JSONResponse(stats)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

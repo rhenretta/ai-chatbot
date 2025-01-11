@@ -1,0 +1,62 @@
+# AI Memory Chatbot Project Rules
+
+# Environment
+- Python version: 3.9+
+- AWS Region: us-east-2
+- Redis required: true
+- OpenAI API key required: true
+
+# Code Style
+- Use type hints consistently
+- Document complex functions
+- Use meaningful variable names
+- Follow PEP 8 guidelines
+
+# Project Structure
+app/
+  - main.py: FastAPI application entry point
+  - chat_processor.py: Core chat processing logic
+  - database.py: Vector store and Redis operations
+  - embeddings.py: OpenAI embeddings management
+  - models.py: Pydantic models and data structures
+static/
+  - css/: Stylesheets
+  - js/: JavaScript files
+templates/
+  - chat.html: Main chat interface
+
+# Dependencies
+- fastapi: Web framework
+- uvicorn: ASGI server
+- redis: Vector store
+- openai: GPT and embeddings API
+- numpy: Vector operations
+- python-dotenv: Environment management
+
+# Development Guidelines
+1. Memory Management:
+   - Use batch processing for embeddings
+   - Implement efficient chunking
+   - Monitor Redis memory usage
+
+2. Error Handling:
+   - Graceful fallbacks for API failures
+   - Proper error messages
+   - Debug logging
+
+3. Performance:
+   - Batch vector operations
+   - Use Redis pipeline for bulk operations
+   - Optimize similarity search
+
+4. Testing:
+   - Test with various file formats
+   - Verify memory retrieval accuracy
+   - Check conversation context
+
+# Security
+- Store API keys in .env
+- Rate limit API requests
+- Sanitize user input
+- No hardcoded credentials
+

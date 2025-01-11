@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Memory Chatbot</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        body {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .main-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            max-height: 100vh;
+            padding: 1rem;
+        }
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            min-height: 0;
+        }
+        .message {
+            max-width: 80%;
+            margin: 8px;
+            padding: 12px;
+            border-radius: 12px;
+        }
+        .user-message {
+            background-color: #e2e8f0;
+            margin-left: auto;
+        }
+        .bot-message {
+            background-color: #4299e1;
+            color: white;
+            margin-right: auto;
+        }
+        .timestamp {
+            font-size: 0.75rem;
+            color: #718096;
+            margin-top: 4px;
+        }
+        .progress-bar {
+            height: 4px;
+            background-color: #e2e8f0;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background-color: #4299e1;
+            transition: width 0.3s ease;
+        }
+        .stats-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+        }
+        .stat-card {
+            background: white;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="main-container">
+        <div class="bg-white rounded-lg shadow-lg p-6 flex flex-col h-full">
+            <!-- Header Section -->
+            <div class="mb-4">
+                <h1 class="text-2xl font-bold">AI Memory Chatbot</h1>
+                <p class="text-gray-600">Enhanced with conversation memory and context awareness</p>
+            </div>
+
+            <!-- Stats Section -->
+            <div class="stats-container mb-4">
+                <div class="stat-card">
+                    <h3 class="text-sm font-semibold text-gray-600">Memory Count</h3>
+                    <p class="text-2xl font-bold" id="memoryCount">0</p>
+                </div>
+                <div class="stat-card cursor-pointer" onclick="toggleContextPanel()" title="Click to view context details">
+                    <h3 class="text-sm font-semibold text-gray-600">Active Context</h3>
+                    <p class="text-2xl font-bold" id="contextCount">0</p>
+                    <span class="text-xs text-blue-600">Click to view details</span>
+                </div>
+                <div class="stat-card">
+                    <h3 class="text-sm font-semibold text-gray-600">Messages</h3>
+                    <p class="text-2xl font-bold" id="messageCount">0</p>
+                </div>
+            </div>
+            
+            <!-- Context Panel -->
+            <div id="contextPanel" class="hidden mb-4 bg-gray-50 rounded-lg p-4">
+                <div class="flex justify-between items-center mb-2">
+                    <h2 class="text-lg font-semibold">Active Context</h2>
+                    <button onclick="toggleContextPanel()" class="text-gray-500 hover:text-gray-700">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+                <div id="contextContent" class="text-sm text-gray-600">
+                    <div class="memories-section"></div>
+                    <div class="current-conversation-section mt-4"></div>
+                </div>
+            </div>
+
+            <!-- File Upload Section -->
+            <div class="mb-4 bg-gray-50 rounded-lg p-4">
+                <h2 class="text-lg font-semibold mb-2">Upload Conversation History</h2>
+                <form id="uploadForm" class="flex flex-col gap-2">
+                    <div class="flex items-center">
+                        <input type="file" id="fileInput" accept=".json,.zip" 
+                               class="flex-1 p-2 border rounded"
+                               title="Upload ChatGPT conversation history (ZIP export or JSON file)">
+                        <button type="submit" class="ml-4 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600">
+                            Upload
+                        </button>
+                    </div>
+                    <div class="upload-progress hidden" id="uploadProgress">
+                        <div class="flex justify-between text-sm text-gray-600 mb-1">
+                            <span id="uploadStage">Preparing upload...</span>
+                            <span id="uploadSize"></span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-bar-fill" style="width: 0%"></div>
+                        </div>
+                        <div class="mt-2">
+                            <div id="uploadStatus" class="text-sm"></div>
+                            <div id="processingStats" class="text-xs text-gray-500 mt-1"></div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Chat Interface -->
+            <div class="chat-container mb-4 border rounded-lg p-4 flex-1">
+                <div id="messageContainer"></div>
+            </div>
+
+            <!-- Message Input -->
+            <form id="chatForm" class="flex items-center mt-auto">
+                <input type="text" id="messageInput" placeholder="Type your message..." 
+                       class="flex-1 p-3 border rounded-l focus:outline-none focus:ring-2 focus:ring-blue-400">
+                <button type="submit" class="px-6 py-3 bg-blue-500 text-white rounded-r hover:bg-blue-600">
+                    Send
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let currentConversationId = null;
+        let messageCounter = 0;
+
+        // Update stats
+        function updateStats(memories = 0, context = 0) {
+            document.getElementById('memoryCount').textContent = memories;
+            document.getElementById('contextCount').textContent = context;
+            document.getElementById('messageCount').textContent = messageCounter;
+        }
+
+        // Handle file upload
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const fileInput = document.getElementById('fileInput');
+            const statusDiv = document.getElementById('uploadStatus');
+            const progressBar = document.getElementById('uploadProgress');
+            const progressFill = progressBar.querySelector('.progress-bar-fill');
+            const uploadStage = document.getElementById('uploadStage');
+            const uploadSize = document.getElementById('uploadSize');
+            const processingStats = document.getElementById('processingStats');
+            
+            if (!fileInput.files[0]) {
+                statusDiv.textContent = 'Please select a file';
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // Show upload section
+            progressBar.classList.remove('hidden');
+            progressFill.style.width = '0%';
+            uploadSize.textContent = formatFileSize(file.size);
+            
+            // Start progress monitoring
+            const eventSource = new EventSource('/upload-progress');
+            let totalProcessed = 0;
+            let totalSkipped = 0;
+            let totalErrors = 0;
+            let lastProgress = 0;
+            
+            eventSource.addEventListener('progress', (e) => {
+                const data = JSON.parse(e.data);
+                if (data.status === 'processing') {
+                    // Update progress based on current/total conversations
+                    const progress = Math.min(100, (data.current / data.total) * 100);
+                    progressFill.style.width = `${progress}%`;
+                    lastProgress = progress;
+                    
+                    // Update processing stats
+                    if (data.stats) {
+                        // Only add the new stats
+                        totalProcessed = data.stats.processed;
+                        totalSkipped = data.stats.skipped;
+                        totalErrors = data.stats.errors;
+                        
+                        uploadStage.textContent = `Processing conversation ${data.current} of ${data.total} (${progress.toFixed(1)}%)`;
+                        statusDiv.innerHTML = `<span class="text-blue-600">Processing conversations...</span>`;
+                        processingStats.innerHTML = `
+                            <div class="grid grid-cols-3 gap-2">
+                                <div>Processed: <span class="font-semibold">${totalProcessed}</span></div>
+                                <div>Skipped: <span class="font-semibold">${totalSkipped}</span></div>
+                                <div>Errors: <span class="font-semibold text-red-600">${totalErrors}</span></div>
+                            </div>
+                        `;
+                    }
+                }
+                
+                if (data.memory_stats) {
+                    updateStats(
+                        data.memory_stats.total_memories || 0,
+                        data.memory_stats.used_in_context || 0
+                    );
+                }
+            });
+            
+            // Upload timeout
+            const timeout = setTimeout(() => {
+                if (lastProgress < 100) {
+                    statusDiv.innerHTML = '<span class="text-yellow-600">Processing large file... ' +
+                        `${lastProgress.toFixed(1)}% complete (${totalProcessed} processed, ${totalSkipped} skipped, ${totalErrors} errors)</span>`;
+                }
+            }, 10000); // 10 seconds
+
+            try {
+                uploadStage.textContent = 'Uploading and processing file...';
+                statusDiv.textContent = 'Starting upload...';
+                
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                clearTimeout(timeout);
+                eventSource.close();  // Stop progress monitoring
+                
+                if (!response.ok) {
+                    throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+                if (result.status === 'success') {
+                    // Final stats update
+                    if (result.memory_stats) {
+                        updateStats(
+                            result.memory_stats.total_memories || 0,
+                            result.memory_stats.used_in_context || 0
+                        );
+                    }
+                    
+                    // Show results for each conversation
+                    let totalProcessed = 0;
+                    let totalSkipped = 0;
+                    let totalErrors = 0;
+                    
+                    result.results.forEach(result => {
+                        const stats = result.stats;
+                        totalProcessed += stats.processed;
+                        totalSkipped += stats.skipped;
+                        totalErrors += stats.errors;
+                        
+                        // Use the last conversation ID as current
+                        currentConversationId = result.conversation_id;
+                    });
+                    
+                    uploadStage.textContent = 'Upload complete';
+                    statusDiv.innerHTML = `<span class="text-green-600">Successfully processed conversations</span>`;
+                    processingStats.innerHTML = `
+                        <div class="grid grid-cols-3 gap-2">
+                            <div>Processed: <span class="font-semibold">${totalProcessed}</span></div>
+                            <div>Skipped: <span class="font-semibold">${totalSkipped}</span></div>
+                            <div>Errors: <span class="font-semibold text-red-600">${totalErrors}</span></div>
+                        </div>
+                    `;
+                } else {
+                    throw new Error(result.detail || 'Upload failed');
+                }
+            } catch (error) {
+                clearTimeout(timeout);
+                eventSource.close();  // Stop progress monitoring
+                uploadStage.textContent = 'Upload failed';
+                statusDiv.innerHTML = `<span class="text-red-600">Error: ${error.message}</span>`;
+                processingStats.textContent = '';
+            }
+        });
+
+        // Format file size
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Add message to chat
+        function addMessage(role, text, timestamp = new Date()) {
+            const messageContainer = document.getElementById('messageContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role === 'user' ? 'user-message' : role === 'error' ? 'error-message' : 'bot-message'}`;
+            
+            const textDiv = document.createElement('div');
+            textDiv.textContent = text;
+            messageDiv.appendChild(textDiv);
+            
+            const timeDiv = document.createElement('div');
+            timeDiv.className = 'timestamp';
+            timeDiv.textContent = timestamp.toLocaleTimeString();
+            messageDiv.appendChild(timeDiv);
+            
+            messageContainer.appendChild(messageDiv);
+            messageContainer.scrollTop = messageContainer.scrollHeight;
+        }
+
+        // Toggle context panel
+        function toggleContextPanel() {
+            const panel = document.getElementById('contextPanel');
+            panel.classList.toggle('hidden');
+        }
+
+        // Update context content with better formatting
+        function updateContextContent(context) {
+            const contentDiv = document.getElementById('contextContent');
+            if (!contentDiv) {
+                console.error('Context content div not found');
+                return;
+            }
+
+            // Initialize or get sections
+            let memoriesSection = contentDiv.querySelector('.memories-section');
+            let currentConversationSection = contentDiv.querySelector('.current-conversation-section');
+            
+            // Create sections if they don't exist
+            if (!memoriesSection) {
+                memoriesSection = document.createElement('div');
+                memoriesSection.className = 'memories-section';
+                contentDiv.appendChild(memoriesSection);
+            }
+            if (!currentConversationSection) {
+                currentConversationSection = document.createElement('div');
+                currentConversationSection.className = 'current-conversation-section mt-4';
+                contentDiv.appendChild(currentConversationSection);
+            }
+            
+            if (!context || !context.trim()) {
+                contentDiv.innerHTML = '<div class="text-gray-500">No active context available</div>';
+                return;
+            }
+            
+            // If showing a specific conversation
+            if (context.startsWith("Here's the conversation from")) {
+                contentDiv.innerHTML = `
+                    <div class="conversation-view">
+                        ${context.split('\n').map((line, i) => 
+                            i === 0 
+                                ? `<div class="font-semibold mb-2">${line}</div>`
+                                : `<div class="message-item mb-2 pl-4 ${
+                                    line.startsWith('user:') ? 'border-l-2 border-blue-200' : 'border-l-2 border-green-200'
+                                  }">${line}</div>`
+                        ).join('')}
+                    </div>
+                `;
+                return;
+            }
+            
+            // Split context into sections
+            const sections = context.split('\n\n');
+            
+            // Process memories section
+            if (sections[0].startsWith('Based on our previous conversations:')) {
+                memoriesSection.innerHTML = `
+                    <div class="font-semibold mb-2">Previous Conversations</div>
+                    ${sections[0].split('\n').slice(1).map(memory => 
+                        `<div class="memory-item mb-2 pl-4 border-l-2 border-blue-200">${memory}</div>`
+                    ).join('')}
+                `;
+            } else {
+                memoriesSection.innerHTML = '';
+            }
+            
+            // Process current conversation section
+            if (sections[1] && sections[1].startsWith('In our current conversation:')) {
+                currentConversationSection.innerHTML = `
+                    <div class="font-semibold mb-2">Current Conversation</div>
+                    ${sections[1].split('\n').slice(1).map(msg => 
+                        `<div class="message-item mb-2 pl-4 border-l-2 border-green-200">${msg}</div>`
+                    ).join('')}
+                `;
+            } else {
+                currentConversationSection.innerHTML = '';
+            }
+        }
+
+        // Handle chat messages
+        document.getElementById('chatForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const messageInput = document.getElementById('messageInput');
+            const message = messageInput.value.trim();
+            
+            if (!message) return;
+            
+            // Add user message to chat
+            addMessage('user', message);
+            messageInput.value = '';
+            messageCounter++;
+            updateStats();
+            
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        conversation_id: currentConversationId
+                    })
+                });
+                
+                const result = await response.json();
+                if (response.ok) {
+                    currentConversationId = result.conversation_id;
+                    addMessage('bot', result.response);
+                    messageCounter++;
+                    updateStats(result.memory_count || 0, result.context_count || 0);
+                    // Update context panel with actual context
+                    if (result.context) {
+                        updateContextContent(result.context);
+                    }
+                } else {
+                    throw new Error(result.detail || 'Failed to get response');
+                }
+            } catch (error) {
+                addMessage('error', `Error: ${error.message}`);
+            }
+        });
+
+        // Initialize stats
+        window.onload = async function() {
+            try {
+                const response = await fetch('/stats');
+                const data = await response.json();
+                updateStats(
+                    data.total_memories || 0,
+                    data.used_in_context || 0
+                );
+            } catch (error) {
+                console.error('Failed to load initial stats:', error);
+            }
+        };
+    </script>
+</body>
+</html> 

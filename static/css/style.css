@@ -155,4 +155,11 @@ button:hover {
 
 input[type="file"] {
     margin-right: 1rem;
+}
+
+.vector-count {
+    color: #666;
+    font-size: 0.9em;
+    margin: 10px 0;
+    text-align: center;
 } 
