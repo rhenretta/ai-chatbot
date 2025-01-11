@@ -26,3 +26,4 @@ dist/
 build/
 
 test-file.zip
+.pytest_cache/

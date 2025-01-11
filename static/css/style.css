@@ -100,10 +100,13 @@ h1 {
 }
 
 .message {
+    position: relative;
     margin-bottom: 1rem;
     padding: 0.8rem;
     border-radius: 8px;
     max-width: 80%;
+    white-space: pre-wrap;
+    word-wrap: break-word;
 }
 
 .message.user {
@@ -118,10 +121,121 @@ h1 {
     margin-right: auto;
 }
 
+.message.assistant p {
+    margin-bottom: 1rem;
+}
+
+.message.assistant p:last-child {
+    margin-bottom: 0;
+}
+
+/* Conversation snippet styling */
+.message p br + br {
+    content: "";
+    display: block;
+    margin: 0.8em 0;
+}
+
+.message p br {
+    line-height: 1.8;
+}
+
 .message.error {
     background-color: #dc3545;
     color: #fff;
     margin: 0 auto;
+}
+
+.message-content {
+    margin-bottom: 0.5rem;
+}
+
+.prompt-button {
+    font-size: 0.8rem;
+    padding: 0.3rem 0.6rem;
+    background-color: #6c757d;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+}
+
+.prompt-button:hover {
+    opacity: 1;
+}
+
+/* Modal styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+    position: relative;
+    background-color: #fff;
+    margin: 10% auto;
+    padding: 20px;
+    border-radius: 8px;
+    width: 80%;
+    max-width: 800px;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.close {
+    position: absolute;
+    right: 20px;
+    top: 10px;
+    font-size: 28px;
+    font-weight: bold;
+    color: #aaa;
+    cursor: pointer;
+}
+
+.close:hover {
+    color: #555;
+}
+
+.prompt-content {
+    margin-top: 20px;
+}
+
+.prompt-content h3 {
+    margin: 15px 0 10px;
+    color: #333;
+}
+
+.prompt-content pre {
+    background-color: #f8f9fa;
+    padding: 15px;
+    border-radius: 4px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: monospace;
+    margin: 10px 0;
+}
+
+.prompt-content ul {
+    list-style-type: none;
+    padding: 0;
+    margin: 10px 0;
+}
+
+.prompt-content li {
+    background-color: #e9ecef;
+    padding: 8px 12px;
+    margin: 5px 0;
+    border-radius: 4px;
+    font-family: monospace;
 }
 
 .input-container {

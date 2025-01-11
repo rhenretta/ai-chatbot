@@ -1,11 +1,13 @@
 import os
-from openai import OpenAI
-from typing import List, Dict, Any
+from openai import OpenAI, AsyncOpenAI
+from typing import List, Dict, Any, Optional
 import numpy as np
+import asyncio
 
 class EmbeddingsManager:
     def __init__(self, api_key: str):
         self.client = OpenAI(api_key=api_key)
+        self.async_client = AsyncOpenAI(api_key=api_key)
         self.model = "text-embedding-ada-002"
         self.max_tokens = 8191  # OpenAI's limit
         self.batch_size = 20  # Process 20 texts at a time
@@ -39,25 +41,72 @@ class EmbeddingsManager:
             
         return chunks
         
-    def get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings for multiple texts in one API call."""
-        if not texts:
-            return []
-            
-        # Process in batches to avoid API limits
-        all_embeddings = []
-        for i in range(0, len(texts), self.batch_size):
-            batch = texts[i:i + self.batch_size]
+    def get_embedding(self, text: str) -> Optional[List[float]]:
+        """Get embedding for a text string."""
+        try:
+            if not isinstance(text, str):
+                print(f"Invalid text type: {type(text)}")
+                return None
+                
+            if not text.strip():
+                print("Empty text provided")
+                return None
+                
             response = self.client.embeddings.create(
                 model=self.model,
-                input=batch
+                input=text
             )
-            embeddings = [data.embedding for data in response.data]
-            all_embeddings.extend(embeddings)
+            return response.data[0].embedding
+        except Exception as e:
+            print(f"Error getting embedding: {str(e)}")
+            return None
+
+    async def get_embedding_async(self, text: str) -> Optional[List[float]]:
+        """Get embedding for a text string asynchronously."""
+        try:
+            if not isinstance(text, str):
+                print(f"Invalid text type: {type(text)}")
+                return None
+                
+            if not text.strip():
+                print("Empty text provided")
+                return None
+                
+            response = await self.async_client.embeddings.create(
+                model=self.model,
+                input=text
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            print(f"Error getting embedding async: {str(e)}")
+            return None
+
+    async def get_embeddings_batch_async(self, texts: List[str]) -> List[Optional[List[float]]]:
+        """Get embeddings for multiple texts in parallel."""
+        try:
+            if not texts:
+                print("Empty texts list provided")
+                return []
+                
+            tasks = []
+            for i in range(0, len(texts), self.batch_size):
+                batch = texts[i:i + self.batch_size]
+                tasks.append(self.async_client.embeddings.create(
+                    model=self.model,
+                    input=batch
+                ))
             
-        return all_embeddings
-        
-    def get_embedding(self, text: str) -> List[float]:
-        """Get embedding for a single text."""
-        embeddings = self.get_embeddings_batch([text])
-        return embeddings[0] if embeddings else []
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+            embeddings = []
+            
+            for response in responses:
+                if isinstance(response, Exception):
+                    print(f"Error in batch processing: {str(response)}")
+                    embeddings.extend([None] * self.batch_size)
+                else:
+                    embeddings.extend([data.embedding for data in response.data])
+            
+            return embeddings
+        except Exception as e:
+            print(f"Error in batch embeddings: {str(e)}")
+            return [None] * len(texts)

@@ -1,42 +1,7 @@
 document.addEventListener('DOMContentLoaded', function() {
-    const uploadForm = document.getElementById('uploadForm');
-    const uploadStatus = document.getElementById('uploadStatus');
     const messageInput = document.getElementById('messageInput');
     const sendButton = document.getElementById('sendButton');
-    const chatHistory = document.getElementById('chatHistory');
-
-    // Handle file upload
-    uploadForm.addEventListener('submit', async function(e) {
-        e.preventDefault();
-        
-        const formData = new FormData();
-        const fileInput = document.getElementById('file');
-        
-        if (!fileInput.files[0]) {
-            uploadStatus.textContent = 'Please select a file first.';
-            return;
-        }
-        
-        formData.append('file', fileInput.files[0]);
-        
-        try {
-            uploadStatus.textContent = 'Uploading and processing file...';
-            const response = await fetch('/upload', {
-                method: 'POST',
-                body: formData
-            });
-            
-            const result = await response.json();
-            
-            if (response.ok) {
-                uploadStatus.textContent = result.message;
-            } else {
-                throw new Error(result.detail || 'Upload failed');
-            }
-        } catch (error) {
-            uploadStatus.textContent = `Error: ${error.message}`;
-        }
-    });
+    const chatMessages = document.getElementById('chat-messages');
 
     // Handle chat messages
     async function sendMessage() {
@@ -72,8 +37,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', `${role}-message`);
         messageDiv.textContent = content;
-        chatHistory.appendChild(messageDiv);
-        chatHistory.scrollTop = chatHistory.scrollHeight;
+        chatMessages.appendChild(messageDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
     // Event listeners for sending messages
