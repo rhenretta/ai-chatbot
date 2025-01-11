@@ -121,8 +121,120 @@ h1 {
     margin-right: auto;
 }
 
+.message.assistant h1,
+.message.assistant h2,
+.message.assistant h3,
+.message.assistant h4,
+.message.assistant h5,
+.message.assistant h6 {
+    margin-top: 0.7em;
+    margin-bottom: 0.3em;
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+.message.assistant h1 { font-size: 1.5em; }
+.message.assistant h2 { font-size: 1.3em; }
+.message.assistant h3 { font-size: 1.2em; }
+.message.assistant h4 { font-size: 1.1em; }
+.message.assistant h5 { font-size: 1em; }
+.message.assistant h6 { font-size: 1em; }
+
 .message.assistant p {
-    margin-bottom: 1rem;
+    margin-bottom: 0.3em;
+    line-height: 1.4;
+}
+
+.message.assistant p + p {
+    margin-top: 0.3em;
+}
+
+.message.assistant ul,
+.message.assistant ol {
+    margin-bottom: 0.3em;
+    padding-left: 1.5em;
+}
+
+.message.assistant li {
+    margin-bottom: 0.3em;
+    line-height: 1.4;
+}
+
+.message.assistant li:last-child {
+    margin-bottom: 0;
+}
+
+.message.assistant p:last-child {
+    margin-bottom: 0;
+}
+
+.message.assistant code {
+    padding: 0.2em 0.4em;
+    background-color: rgba(0, 0, 0, 0.05);
+    border-radius: 3px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 0.9em;
+}
+
+.message.assistant pre {
+    margin: 1em 0;
+    padding: 1em;
+    background-color: rgba(0, 0, 0, 0.05);
+    border-radius: 4px;
+    overflow-x: auto;
+}
+
+.message.assistant pre code {
+    padding: 0;
+    background-color: transparent;
+}
+
+.message.assistant strong {
+    font-weight: 600;
+}
+
+.message.assistant em {
+    font-style: italic;
+}
+
+.message.assistant blockquote {
+    margin: 1em 0;
+    padding-left: 1em;
+    border-left: 4px solid #ddd;
+    color: #666;
+}
+
+.message.assistant a {
+    color: #0366d6;
+    text-decoration: none;
+}
+
+.message.assistant a:hover {
+    text-decoration: underline;
+}
+
+.message.assistant img {
+    max-width: 100%;
+    height: auto;
+    margin: 1em 0;
+    border-radius: 4px;
+}
+
+.message.assistant table {
+    margin: 1em 0;
+    border-collapse: collapse;
+    width: 100%;
+}
+
+.message.assistant th,
+.message.assistant td {
+    padding: 0.5em;
+    border: 1px solid #ddd;
+}
+
+.message.assistant th {
+    background-color: #f8f9fa;
+    font-weight: 600;
 }
 
 .message.assistant p:last-child {
@@ -316,4 +428,86 @@ input[type="file"] {
     display: block;
     content: "";
     margin-top: 0.4em;
+}
+
+.prompt-details {
+    font-family: 'Fira Code', monospace;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    padding: 0.5rem;
+    margin: 0.5rem 0;
+    background-color: #f8f9fa;
+    border-left: 3px solid #6c757d;
+    border-radius: 0 4px 4px 0;
+    overflow-x: auto;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.prompt-details pre {
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.prompt-details .key {
+    color: #2c5282;
+    font-weight: 500;
+}
+
+.prompt-details .value {
+    color: #1a365d;
+}
+
+.prompt-details .number {
+    color: #2b6cb0;
+}
+
+.prompt-details .boolean {
+    color: #805ad5;
+}
+
+.prompt-details .null {
+    color: #718096;
+    font-style: italic;
+}
+
+.prompt-details .section {
+    margin-bottom: 0.5rem;
+    padding-left: 1rem;
+    border-left: 2px solid #e2e8f0;
+}
+
+.prompt-details .section-title {
+    font-weight: 600;
+    color: #2d3748;
+    margin-bottom: 0.25rem;
+}
+
+.prompt-details .collapsed {
+    max-height: 50px;
+    overflow: hidden;
+    position: relative;
+}
+
+.prompt-details .collapsed::after {
+    content: "...";
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    padding: 0 0.5rem;
+    background-color: #f8f9fa;
+}
+
+.prompt-details .expand-button {
+    font-size: 0.8rem;
+    color: #4a5568;
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    background: none;
+    border: none;
+    text-decoration: underline;
+}
+
+.prompt-details .expand-button:hover {
+    color: #2d3748;
 } 

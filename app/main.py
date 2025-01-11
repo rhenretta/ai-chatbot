@@ -35,7 +35,11 @@ if not api_key:
 
 vector_store = VectorStore()
 embeddings_manager = EmbeddingsManager(api_key)
-chat_processor = ChatProcessor(api_key, vector_store, embeddings_manager)
+chat_processor = ChatProcessor(
+    vector_store=vector_store,
+    embeddings_manager=embeddings_manager,
+    api_key=api_key
+)
 
 class ChatRequest(BaseModel):
     message: str
