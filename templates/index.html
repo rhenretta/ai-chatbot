@@ -3,31 +3,146 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Memory RAG System</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <title>AI Memory Chatbot</title>
+    <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
     <div class="container">
-        <h1>AI Memory RAG System</h1>
-        
-        <div class="upload-section">
-            <h2>Upload ChatGPT Export</h2>
-            <form id="uploadForm" enctype="multipart/form-data">
-                <input type="file" id="file" name="file" accept=".json">
-                <button type="submit">Upload</button>
-            </form>
-            <div id="uploadStatus"></div>
-        </div>
-        
-        <div class="chat-section">
-            <div id="chatHistory"></div>
-            <div class="chat-input">
-                <input type="text" id="messageInput" placeholder="Type your message...">
-                <button id="sendButton">Send</button>
+        <header>
+            <h1>AI Memory Chatbot</h1>
+            <div class="upload-section">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <input type="file" id="conversationFile" accept=".json,.zip">
+                    <button type="submit">Upload Conversation History</button>
+                </form>
+                <div id="uploadProgress" class="progress-container" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill"></div>
+                    </div>
+                    <div class="progress-text">0%</div>
+                </div>
+                <div id="uploadStatus" class="status"></div>
             </div>
-        </div>
+        </header>
+        
+        <main>
+            <div id="chat-container">
+                <div id="chat-messages"></div>
+                <div class="input-container">
+                    <input type="text" id="messageInput" placeholder="Type your message...">
+                    <button id="sendButton">Send</button>
+                </div>
+            </div>
+        </main>
     </div>
-    
-    <script src="/static/script.js"></script>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const fileInput = document.getElementById('conversationFile');
+            const statusDiv = document.getElementById('uploadStatus');
+            const progressContainer = document.getElementById('uploadProgress');
+            const progressBar = progressContainer.querySelector('.progress-fill');
+            const progressText = progressContainer.querySelector('.progress-text');
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            statusDiv.textContent = 'Starting upload...';
+            statusDiv.className = 'status processing';
+            progressContainer.style.display = 'block';
+            progressBar.style.width = '0%';
+            progressText.textContent = '0%';
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const reader = response.body.getReader();
+                
+                while (true) {
+                    const {value, done} = await reader.read();
+                    if (done) break;
+                    
+                    // Parse the chunk data
+                    const chunk = new TextDecoder().decode(value);
+                    const updates = chunk.split('\n').filter(line => line.trim());
+                    
+                    for (const update of updates) {
+                        try {
+                            const data = JSON.parse(update);
+                            
+                            if (data.status === 'processing') {
+                                const progress = (data.processed / data.total * 100).toFixed(1);
+                                progressBar.style.width = `${progress}%`;
+                                progressText.textContent = `${progress}% (${data.processed}/${data.total})`;
+                                statusDiv.textContent = `Processing... Success: ${data.success_count}, Errors: ${data.error_count}`;
+                            } else if (data.status === 'complete') {
+                                progressBar.style.width = '100%';
+                                progressText.textContent = '100%';
+                                statusDiv.textContent = data.message;
+                                statusDiv.className = 'status success';
+                                if (data.errors && data.errors.length > 0) {
+                                    console.log('Errors:', data.errors);
+                                }
+                            } else if (data.status === 'error') {
+                                statusDiv.textContent = `Error: ${data.message}`;
+                                statusDiv.className = 'status error';
+                            }
+                        } catch (e) {
+                            console.error('Error parsing update:', e);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                statusDiv.textContent = 'Error uploading file';
+                statusDiv.className = 'status error';
+            }
+        });
+
+        document.getElementById('sendButton').addEventListener('click', sendMessage);
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            if (!message) return;
+
+            // Add user message to chat
+            addMessageToChat('user', message);
+            input.value = '';
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ message })
+                });
+                const result = await response.json();
+                addMessageToChat('assistant', result.response);
+            } catch (error) {
+                console.error('Error:', error);
+                addMessageToChat('error', 'Error sending message');
+            }
+        }
+
+        function addMessageToChat(role, content) {
+            const chatMessages = document.getElementById('chat-messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            messageDiv.textContent = content;
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+    </script>
 </body>
 </html>
