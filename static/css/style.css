@@ -276,4 +276,44 @@ input[type="file"] {
     font-size: 0.9em;
     margin: 10px 0;
     text-align: center;
+}
+
+/* Conversation formatting */
+.conversation-timestamp {
+    font-size: 0.85em;
+    color: #666;
+    margin-bottom: 0.5em;
+    font-style: italic;
+}
+
+.speaker-label {
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.message.assistant .speaker-label {
+    display: inline-block;
+    margin-bottom: 0.3em;
+}
+
+.message br + br {
+    display: block;
+    content: "";
+    margin-top: 0.8em;
+}
+
+/* Ensure proper spacing between messages */
+.message p {
+    margin-bottom: 1.2em;
+}
+
+.message p:last-child {
+    margin-bottom: 0;
+}
+
+/* Improve readability of conversation snippets */
+.message span + br {
+    display: block;
+    content: "";
+    margin-top: 0.4em;
 } 

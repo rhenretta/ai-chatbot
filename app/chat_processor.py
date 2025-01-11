@@ -81,7 +81,8 @@ class ConversationMemoryAgent:
         self.api_key = api_key
         self.chat_history = ChatMessageHistory()
         self.active_memories = {}  # Store recently used memories with timestamps
-        self.last_mentioned_conversation = None  # Track the last mentioned conversation
+        self.last_mentioned_conversations = []  # Track recently mentioned conversations
+        self.last_response_context = None  # Store context from last response
         
         # Create the LLM
         self.llm = ChatOpenAI(
@@ -104,10 +105,23 @@ class ConversationMemoryAgent:
         
         # Create the prompts
         self.decide_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an AI assistant with memory access. Based on the conversation history and current input, decide what to do next:
+            ("system", """You are an AI assistant with memory access. Based on the conversation history and current input, decide what to do next.
 
-1. If the user explicitly asks about past conversations or memories, use 'search' to look for relevant context
-2. If you have enough context to respond, use 'respond'
+Analyze the user's input to determine if they are:
+1. Asking about or referencing a previous conversation
+2. Requesting to see a specific part of a conversation
+3. Making a general query or statement
+
+Guidelines for decision:
+- Use 'search' if:
+  * The user is asking about past conversations or memories
+  * The user is referencing "that conversation" or similar phrases
+  * The user wants to see a snippet or part of a conversation
+  * The query requires context from past interactions
+- Use 'respond' if:
+  * You have enough context to answer directly
+  * The query is about the current conversation
+  * The user is making a new statement or asking a new question
 
 Output your decision as a simple string: either 'search' or 'respond'."""),
             MessagesPlaceholder(variable_name="messages"),
@@ -126,22 +140,26 @@ If the context contains relevant information from past conversations, incorporat
 
 Important guidelines:
 1. NEVER say "as an AI" or mention limitations about emotions/preferences
-2. When asked about favorite conversations or memories:
-   - Search the context for interesting or unique exchanges
-   - Share specific examples with proper formatting
+2. When discussing past conversations:
+   - Only reference conversations that happened directly between us (where you were the assistant)
+   - Be conversational and natural, don't list out conversations unless specifically asked
+   - Don't show conversation snippets unless explicitly requested
    - Focus on the content and what made it interesting
-3. When showing conversation snippets:
-   - Only show the exact conversation being referenced
-   - Format it in a clear, readable way with proper spacing
-   - Use "Me:" for user messages and "You:" for assistant messages
-4. Never use phrases like "give me a moment" or similar that imply another response is coming
-5. If you can't find relevant information in the context, focus on the current conversation instead of disclaimers
-
-When displaying conversation snippets, format them like this:
-
-Me: [user's message]
-
-You: [assistant's message]"""),
+3. When showing conversation snippets (only when requested):
+   - Format with proper labels from your perspective:
+     - Use "Me:" when referring to your (assistant) messages
+     - Use "You:" when referring to user messages
+   - Include timestamps in [Conversation from DATE] format
+   - Add blank lines between messages for readability
+4. Memory verification:
+   - Before mentioning a memory, verify it was a direct interaction between us
+   - If a memory seems irrelevant or unclear, don't include it
+   - If unsure about a memory's relevance, focus on the current conversation instead
+5. Response structure:
+   - Keep responses conversational and natural
+   - Use paragraph breaks for readability
+   - Don't use unnecessary formatting or markers
+   - Don't mention searching or checking memories"""),
             ("system", "Context from memory: {context}"),
             MessagesPlaceholder(variable_name="messages"),
             ("human", "{input}")
@@ -167,15 +185,18 @@ You: [assistant's message]"""),
             tools_used = state["tools_used"]
             
             try:
-                # First, automatically check for relevant memories
-                results = self._search_conversations(current_input)
+                # If we already have context from a previous search, go straight to respond
+                if context and any(r.get('text') for r in context):
+                    print("Using existing context to respond")
+                    return {
+                        "messages": messages,
+                        "current_input": current_input,
+                        "context": context,
+                        "tools_used": tools_used,
+                        "next_step": "respond"
+                    }
                 
-                if results:
-                    print(f"Found {len(results)} initial relevant memories")
-                    context = context + results
-                    tools_used = tools_used + ["search_conversations"]
-                
-                # Now decide if we need to explicitly search or can respond
+                # Get decision from LLM
                 response = self.decide_prompt | self.llm
                 result = response.invoke({
                     "messages": messages,
@@ -188,17 +209,22 @@ You: [assistant's message]"""),
                 
                 # Clean and normalize the response
                 decision = response_text.strip().lower()
-                if "search" in decision and not results:  # Only search if we haven't found results yet
-                    print("Deciding to perform explicit search")
-                    return {
-                        "messages": messages,
-                        "current_input": current_input,
-                        "context": context,
-                        "tools_used": tools_used,
-                        "next_step": "search"
-                    }
                 
-                print("Deciding to respond with current context")
+                # If decision is to search, do an initial search before deciding
+                if "search" in decision:
+                    print("Performing initial search before decision")
+                    results = self._search_conversations(current_input)
+                    if results:
+                        print(f"Found {len(results)} relevant results")
+                        return {
+                            "messages": messages,
+                            "current_input": current_input,
+                            "context": results,
+                            "tools_used": tools_used + ["search_conversations"],
+                            "next_step": "respond"
+                        }
+                
+                # If no search results or decision is respond, go to respond
                 return {
                     "messages": messages,
                     "current_input": current_input,
@@ -209,47 +235,6 @@ You: [assistant's message]"""),
                 
             except Exception as e:
                 print(f"Error in decide node: {str(e)}, defaulting to respond")
-                return {
-                    "messages": messages,
-                    "current_input": current_input,
-                    "context": context,
-                    "tools_used": tools_used,
-                    "next_step": "respond"
-                }
-        
-        # Search node
-        def search(state: AgentState) -> Dict[str, Any]:
-            messages = state["messages"]
-            current_input = state["current_input"]
-            context = state["context"]
-            tools_used = state["tools_used"]
-            
-            try:
-                # Generate search query
-                response = (self.search_prompt | self.llm).invoke({
-                    "messages": messages,
-                    "input": current_input,
-                    "context": context
-                })
-                
-                # Extract query text from response
-                query = response.content if hasattr(response, 'content') else str(response)
-                print(f"Generated search query: {query}")
-                
-                # Execute search with the string query
-                results = self._search_conversations(query)
-                
-                # Update state and go directly to respond to prevent recursion
-                return {
-                    "messages": messages,
-                    "current_input": current_input,
-                    "context": context + results,
-                    "tools_used": tools_used + ["search_conversations"],
-                    "next_step": "respond"  # Go directly to respond instead of decide
-                }
-            except Exception as e:
-                print(f"Error in search node: {str(e)}")
-                # On error, go to respond with current context
                 return {
                     "messages": messages,
                     "current_input": current_input,
@@ -280,14 +265,6 @@ You: [assistant's message]"""),
                 # Format the response text for UI display
                 formatted_response = self._format_response_for_ui(response_text)
                 
-                # Include the full prompt in the response for UI display
-                full_prompt = self.response_prompt.format(
-                    messages=messages,
-                    input=current_input,
-                    context=context
-                )
-                
-                # Return a valid state update
                 return {
                     "messages": messages,
                     "current_input": current_input,
@@ -309,21 +286,17 @@ You: [assistant's message]"""),
         
         # Add nodes to graph
         graph.add_node("decide", decide)
-        graph.add_node("search", search)
         graph.add_node("respond", respond)
         
-        # Add edges with conditions
+        # Add edges
         graph.add_conditional_edges(
             "decide",
             lambda x: x["next_step"],
             {
-                "search": "search",
-                "respond": "respond"
+                "respond": "respond",
+                "end": END
             }
         )
-        
-        # Add unconditional edges
-        graph.add_edge("search", "decide")
         graph.add_edge("respond", END)
         
         # Set entry point
@@ -346,13 +319,13 @@ You: [assistant's message]"""),
                     "tools_used": []
                 }
             
-            # Initialize the state
+            # Initialize the state with any existing context
             initial_state = {
-                "messages": [],  # Will be populated by conversation history if needed
+                "messages": [],
                 "current_input": message.strip() if message else "",
-                "context": [],
+                "context": self.last_response_context if self.last_response_context else [],
                 "tools_used": [],
-                "next_step": "decide"  # Add initial next_step
+                "next_step": "decide"
             }
             
             if not initial_state["current_input"]:
@@ -364,9 +337,11 @@ You: [assistant's message]"""),
                 }
             
             print("Invoking workflow with initial state...")
-            # Use the workflow to process the message
             result = await self.workflow.ainvoke(initial_state)
             print(f"Workflow result: {result}")
+            
+            # Store context for future reference
+            self.last_response_context = result.get("context", [])
             
             # Generate the full prompt for display
             try:
@@ -379,7 +354,7 @@ You: [assistant's message]"""),
                 print(f"Error generating full prompt: {str(e)}")
                 full_prompt = None
             
-            # Extract the response, ensuring it's a string
+            # Extract the response
             response = str(result.get("final_answer", "I couldn't generate a response."))
             context = result.get("context", [])
             tools_used = result.get("tools_used", [])
@@ -537,7 +512,9 @@ You: [assistant's message]"""),
                 formatted_lines.append("")  # Add blank line after timestamp
         
         # Replace labels and split into lines
-        lines = text.replace("Assistant:", "You:").replace("User:", "Me:").split('\n')
+        # Note: From AI's perspective, "Me" is the assistant and "You" is the user
+        lines = text.replace("assistant:", "Me:").replace("user:", "You:").split('\n')
+        current_speaker = None
         current_message = []
         
         for line in lines:
@@ -550,15 +527,25 @@ You: [assistant's message]"""),
                 if current_message:
                     formatted_lines.append(" ".join(current_message))
                     formatted_lines.append("")  # Add blank line between messages
+                current_speaker = line[:3]  # "Me:" or "You:"
                 current_message = [line]
             else:
-                current_message.append(line)
+                # If no speaker prefix and we have a current speaker, append to current message
+                if current_speaker:
+                    current_message.append(line)
+                else:
+                    # If no current speaker, treat as a new message with default speaker
+                    if current_message:
+                        formatted_lines.append(" ".join(current_message))
+                        formatted_lines.append("")
+                    current_message = [line]
         
         # Add the last message if exists
         if current_message:
             formatted_lines.append(" ".join(current_message))
         
-        return "\n".join(formatted_lines)
+        # Ensure proper spacing
+        return "\n".join(formatted_lines).strip()
 
     def _extract_relevant_clip(self, text: str, query: str) -> str:
         """Extract the most relevant part of a conversation based on the query."""
@@ -599,37 +586,9 @@ You: [assistant's message]"""),
         return most_relevant if most_relevant else text
 
     def _search_conversations(self, query: str) -> List[Dict[str, Any]]:
-        """Search for relevant conversations using the query."""
+        """Search for relevant conversations in the vector store."""
         try:
-            if not isinstance(query, str):
-                print(f"Invalid query type: {type(query)}")
-                return []
-                
-            # Clean the query
-            query = query.strip()
-            if not query:
-                print("Empty query after cleaning")
-                return []
-            
-            # Check if this is a request for a specific conversation
-            is_specific_request = any(phrase in query.lower() for phrase in [
-                "show me", "that conversation", "the conversation", "snippet", "what did we say",
-                "remember when", "you said", "i said", "we talked about"
-            ])
-            
-            # If asking for a specific conversation and we have a last mentioned one, use it
-            if is_specific_request and self.last_mentioned_conversation:
-                print(f"Using last mentioned conversation: {self.last_mentioned_conversation}")
-                # Extract relevant clip and format with timestamp
-                text = self._extract_relevant_clip(
-                    self.last_mentioned_conversation['text'],
-                    query
-                )
-                self.last_mentioned_conversation['text'] = self._format_conversation_snippet(
-                    text,
-                    self.last_mentioned_conversation.get('timestamp', '')
-                )
-                return [self.last_mentioned_conversation]
+            print(f"Searching conversations with query: {query}")
             
             # Get embedding for the query
             query_embedding = self.embeddings_manager.get_embedding(query)
@@ -638,60 +597,78 @@ You: [assistant's message]"""),
                 return []
             
             # Search with appropriate parameters
-            if is_specific_request:
-                # Use higher similarity threshold and fewer results for specific requests
-                results = self.vector_store.search_similar(
-                    query_vector=query_embedding,
-                    top_k=1,
-                    min_similarity=0.85
-                )
-            else:
-                # Use lower threshold and more results for general context
-                results = self.vector_store.search_similar(
-                    query_vector=query_embedding,
-                    top_k=3,
-                    min_similarity=0.7
-                )
+            results = self.vector_store.search_similar(
+                query_vector=query_embedding,
+                top_k=5,  # Get more results for better filtering
+                min_similarity=0.65
+            )
             
             if not results:
                 print("No similar conversations found")
                 return []
             
-            # Format results
-            formatted_results = []
+            # Filter and verify results
+            verified_results = []
+            seen_conversations = set()  # Track unique conversations
+            
             for result in results:
-                if isinstance(result, dict) and 'text' in result:
-                    # Extract relevant clip and format with timestamp
-                    text = self._extract_relevant_clip(result['text'], query) if is_specific_request else result['text']
-                    formatted_text = self._format_conversation_snippet(
-                        text,
-                        result.get('timestamp', '')
-                    )
-                    
-                    formatted_result = {
-                        'text': formatted_text,
-                        'similarity': result.get('similarity', 0),
-                        'conversation_id': result.get('conversation_id', 'unknown'),
-                        'timestamp': result.get('timestamp', '')
-                    }
-                    formatted_results.append(formatted_result)
-                    
-                    # Store the most relevant result
-                    if not is_specific_request and len(formatted_results) == 1:
-                        self.last_mentioned_conversation = formatted_result
+                if not isinstance(result, dict) or 'text' not in result:
+                    continue
+                
+                conversation_id = result.get('conversation_id', 'unknown')
+                if conversation_id in seen_conversations:
+                    continue
+                
+                # Verify this is a conversation between the AI and user
+                text = result['text']
+                if not self._verify_conversation_participants(text):
+                    print(f"Skipping conversation {conversation_id}: not a direct interaction")
+                    continue
+                
+                # Format the conversation
+                formatted_text = self._format_conversation_snippet(
+                    text,
+                    result.get('timestamp', '')
+                )
+                
+                verified_result = {
+                    'text': formatted_text,
+                    'similarity': result.get('similarity', 0),
+                    'conversation_id': conversation_id,
+                    'timestamp': result.get('timestamp', ''),
+                    'is_direct_interaction': True
+                }
+                verified_results.append(verified_result)
+                seen_conversations.add(conversation_id)
             
-            # Sort by similarity for specific requests
-            if is_specific_request:
-                formatted_results.sort(key=lambda x: x['similarity'], reverse=True)
-                formatted_results = formatted_results[:1]
+            # Sort by similarity and limit results
+            verified_results.sort(key=lambda x: x['similarity'], reverse=True)
+            verified_results = verified_results[:3]  # Limit to top 3 for context
             
-            print(f"Found {len(formatted_results)} relevant conversations")
-            return formatted_results
+            print(f"Found {len(verified_results)} verified conversations")
+            return verified_results
             
         except Exception as e:
             print(f"Error in _search_conversations: {str(e)}")
             return []
+    
+    def _verify_conversation_participants(self, text: str) -> bool:
+        """Verify that a conversation is between the AI assistant and the user."""
+        # Look for patterns indicating AI-user interaction
+        has_user = bool(re.search(r'\b(user:|User:|you:|You:)', text))
+        has_assistant = bool(re.search(r'\b(assistant:|Assistant:|me:|Me:)', text))
         
+        # Check for third-party mentions or other participant indicators
+        third_party_indicators = [
+            'friend', 'they', 'them', 'he said', 'she said', 'they said',
+            'someone', 'people', 'others', 'we played', 'I played with'
+        ]
+        
+        has_third_party = any(indicator in text.lower() for indicator in third_party_indicators)
+        
+        # Return True only if we have both user and assistant messages and no third-party indicators
+        return has_user and has_assistant and not has_third_party
+
     def _rerank_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Rerank search results considering active memories and relevance."""
         scored_results = []
@@ -735,48 +712,55 @@ You: [assistant's message]"""),
 
     def _format_response_for_ui(self, text: str) -> str:
         """Format the response text for proper display in the UI."""
-        # Split into paragraphs (split on double newlines first)
-        paragraphs = [p.strip() for p in text.split('\n\n')]
-        if len(paragraphs) == 1:  # If no double newlines, try single newlines
-            paragraphs = [p.strip() for p in text.split('\n')]
-        
+        # Split into paragraphs
+        paragraphs = text.split('\n\n')
         formatted_lines = []
         in_conversation = False
+        current_speaker = None
         
         for paragraph in paragraphs:
+            paragraph = paragraph.strip()
             if not paragraph:
                 continue
             
             # Handle conversation headers
             if paragraph.startswith('[Conversation from'):
-                formatted_lines.extend(['', paragraph, ''])
+                if formatted_lines and formatted_lines[-1]:
+                    formatted_lines.append('')  # Add blank line before header
+                formatted_lines.append(paragraph)
+                formatted_lines.append('')  # Add blank line after header
                 in_conversation = True
+                current_speaker = None
                 continue
             
             # Handle messages in conversation
             if paragraph.startswith(('Me:', 'You:')):
-                formatted_lines.extend(['', paragraph])
+                if current_speaker:
+                    formatted_lines.append('')  # Add blank line between messages
+                formatted_lines.append(paragraph)
+                current_speaker = paragraph[:3]
                 continue
             
             # Handle regular paragraphs
-            if in_conversation and formatted_lines and formatted_lines[-1].startswith(('Me:', 'You:')):
+            if in_conversation and current_speaker:
                 # Continue previous message
                 formatted_lines[-1] += " " + paragraph
             else:
-                # New paragraph - add blank line before if needed
-                if formatted_lines and not formatted_lines[-1] == '':
-                    formatted_lines.append('')
+                # New paragraph
+                if formatted_lines and formatted_lines[-1]:
+                    formatted_lines.append('')  # Add blank line between paragraphs
                 formatted_lines.append(paragraph)
+                in_conversation = False
+                current_speaker = None
         
-        # Join with newlines and ensure proper spacing
-        formatted_text = '\n'.join(line for line in formatted_lines if line is not None)
+        # Join with newlines and clean up any excessive spacing
+        formatted_text = '\n'.join(formatted_lines)
         
-        # Ensure proper paragraph breaks in the main text
-        # Replace any sequence of 3 or more newlines with just 2
+        # Clean up excessive newlines while preserving intentional spacing
         while '\n\n\n' in formatted_text:
             formatted_text = formatted_text.replace('\n\n\n', '\n\n')
         
-        return formatted_text
+        return formatted_text.strip()
 
 class ChatProcessor:
     def __init__(self, api_key: str, vector_store: VectorStore, embeddings_manager: EmbeddingsManager):

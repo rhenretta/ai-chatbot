@@ -215,36 +215,7 @@
         function appendMessage(message, isUser = false) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user' : 'assistant'}`;
-            
-            if (isUser) {
-                messageDiv.textContent = message;
-            } else {
-                // Remove any code block markers
-                message = message.replace(/```[\s\S]*?```/g, function(match) {
-                    return match.slice(3, -3).trim();
-                });
-                
-                // Split message into paragraphs and format them
-                const paragraphs = message.split('\n\n').filter(p => p.trim());
-                paragraphs.forEach((paragraph, index) => {
-                    const p = document.createElement('p');
-                    
-                    // Handle conversation snippets by preserving line breaks
-                    if (paragraph.includes('Me:') || paragraph.includes('You:')) {
-                        // Add extra spacing between speakers in conversation snippets
-                        const lines = paragraph.split('\n').map(line => {
-                            if (line.startsWith('Me:') || line.startsWith('You:')) {
-                                return `<br>${line}`;
-                            }
-                            return line;
-                        });
-                        p.innerHTML = lines.join('<br>').replace(/^<br>/, ''); // Remove leading <br>
-                    } else {
-                        p.textContent = paragraph;
-                    }
-                    messageDiv.appendChild(p);
-                });
-            }
+            messageDiv.textContent = message;
             
             // Add prompt icon for assistant messages
             if (!isUser) {
