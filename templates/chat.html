@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>AI Memory Chatbot</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -11,161 +11,42 @@
     <div class="container">
         <header>
             <h1>AI Memory Chatbot</h1>
-            <div class="upload-section">
-                <p class="vector-count">Stored memories: {{ initial_stats.total_memories }}</p>
-                <form id="uploadForm" enctype="multipart/form-data">
-                    <input type="file" id="conversationFile" accept=".json,.zip">
-                    <button type="submit">Upload Conversation History</button>
-                </form>
-                <div id="uploadProgress" class="progress-container" style="display: none;">
-                    <div class="progress-bar">
-                        <div class="progress-fill"></div>
-                    </div>
-                    <div class="progress-text">0%</div>
-                    <div class="progress-status">Ready to upload</div>
-                </div>
-            </div>
+            <div class="memory-count">Stored memories: {{ initial_stats.total_memories }}</div>
         </header>
+        
+        <div class="upload-section">
+            <div class="file-input-container">
+                <input type="file" id="conversationFile" accept=".json,.zip">
+                <button type="button" id="uploadButton">Upload History</button>
+            </div>
+        </div>
         
         <main>
             <div id="chat-container">
                 <div id="chat-messages"></div>
-                <div class="input-container">
-                    <input type="text" id="messageInput" placeholder="Type your message..." autocomplete="off">
-                    <button id="sendButton">Send</button>
-                </div>
+            </div>
+            <div class="input-container">
+                <input type="text" id="messageInput" placeholder="Ask me anything about your memories..." autocomplete="off">
+                <button id="sendButton">Send</button>
             </div>
         </main>
-
-        <!-- Modal for displaying prompts -->
-        <div id="promptModal" class="modal">
-            <div class="modal-content">
-                <span class="close">&times;</span>
-                <h2>Prompt Details</h2>
-                <div class="prompt-content">
-                    <h3>Prompt Used:</h3>
-                    <pre id="promptText"></pre>
-                    <h3>Tools Used:</h3>
-                    <ul id="toolsList"></ul>
-                </div>
-            </div>
-        </div>
     </div>
-
-    <style>
-        .progress-container {
-            width: 100%;
-            margin: 20px 0;
-            position: relative;
-        }
-        .progress-bar {
-            width: 100%;
-            height: 30px;
-            background-color: #f0f0f0;
-            border-radius: 5px;
-            position: relative;
-            overflow: hidden;
-        }
-        .progress-fill {
-            height: 100%;
-            background-color: #4CAF50;
-            width: 0;
-            transition: width 0.3s ease;
-        }
-        .progress-text {
-            text-align: center;
-            margin-top: 8px;
-            font-size: 14px;
-            color: #666;
-        }
-        .progress-status {
-            text-align: center;
-            margin-bottom: 10px;
-            color: #333;
-            font-weight: 500;
-            font-size: 14px;
-        }
-        .progress-fill[style*="width: 100"] + .progress-status {
-            color: white;
-            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
-        }
-        .message {
-            margin: 10px 0;
-            padding: 12px;
-            border-radius: 18px;
-            position: relative;
-            max-width: 70%;
-            word-wrap: break-word;
-        }
-        
-        .message.assistant {
-            background-color: #3b3b3d;
-            margin-left: 20px;
-            color: #ffffff;
-        }
-        
-        .message.user {
-            background-color: #147efb;
-            margin-right: 20px;
-            margin-left: auto;
-            color: #ffffff;
-        }
-        
-        .prompt-icon {
-            position: absolute;
-            right: 10px;
-            top: 10px;
-            cursor: pointer;
-            color: rgba(255, 255, 255, 0.7);
-            font-size: 16px;
-            opacity: 0.8;
-            transition: opacity 0.2s;
-        }
-        
-        .prompt-icon:hover {
-            opacity: 1;
-        }
-        
-        .modal-content {
-            max-width: 800px;
-            max-height: 80vh;
-            overflow-y: auto;
-            white-space: pre-wrap;
-        }
-        
-        .status {
-            margin-top: 10px;
-            padding: 8px 12px;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-        
-        .status.processing {
-            background-color: #fff3cd;
-            color: #856404;
-            border: 1px solid #ffeeba;
-        }
-        
-        .status.success {
-            background-color: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-        
-        .status.error {
-            background-color: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-    </style>
 
     <script>
         const chatMessages = document.getElementById('chat-messages');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
-        const modal = document.getElementById('promptModal');
-        const closeBtn = document.getElementsByClassName('close')[0];
+        const uploadButton = document.getElementById('uploadButton');
+        const fileInput = document.getElementById('conversationFile');
         let currentConversationId = null;
+
+        // Scroll to bottom when keyboard appears (mobile)
+        messageInput.addEventListener('focus', () => {
+            setTimeout(() => {
+                window.scrollTo(0, document.body.scrollHeight);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }, 100);
+        });
 
         // Fetch initial stats when page loads
         async function fetchInitialStats() {
@@ -183,58 +64,30 @@
         // Update the stats display
         function updateStats(stats) {
             const statsText = `Stored memories: ${stats.total_memories || 0}`;
-            document.querySelector('.vector-count').textContent = statsText;
+            document.querySelector('.memory-count').textContent = statsText;
         }
 
         // Load initial stats
         fetchInitialStats();
 
-        // Close modal when clicking the close button
-        closeBtn.onclick = function() {
-            modal.style.display = "none";
-        }
-
-        // Close modal when clicking outside of it
-        window.onclick = function(event) {
-            if (event.target == modal) {
-                modal.style.display = "none";
-            }
-        }
-
-        function showPrompt(prompt, tools) {
-            document.getElementById('promptText').textContent = prompt;
-            const toolsList = document.getElementById('toolsList');
-            toolsList.innerHTML = '';
-            tools.forEach(tool => {
-                const li = document.createElement('li');
-                li.textContent = tool;
-                toolsList.appendChild(li);
-            });
-            modal.style.display = "block";
-        }
-
-        function appendMessage(message, isUser = false) {
+        function appendMessage(message, isUser = false, isError = false) {
+            console.log('Appending message:', { message, isUser, isError });
             const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${isUser ? 'user' : 'assistant'}`;
+            messageDiv.className = `message ${isUser ? 'user' : isError ? 'error' : 'assistant'}`;
             
-            // Use marked for Markdown rendering for assistant messages
-            if (isUser) {
+            if (isUser || isError) {
                 messageDiv.textContent = message;
             } else {
-                messageDiv.innerHTML = marked.parse(message);
-            }
-            
-            // Add prompt icon for assistant messages
-            if (!isUser) {
-                const promptIcon = document.createElement('span');
-                promptIcon.className = 'prompt-icon';
-                promptIcon.innerHTML = '🔍';
-                promptIcon.title = 'Show prompt details';
-                promptIcon.onclick = () => showPrompt(promptText || 'No prompt available', toolsUsed || []);
-                messageDiv.appendChild(promptIcon);
+                try {
+                    messageDiv.innerHTML = marked.parse(message);
+                } catch (e) {
+                    console.error('Error parsing markdown:', e);
+                    messageDiv.textContent = message;
+                }
             }
             
             chatMessages.appendChild(messageDiv);
+            console.log('Message appended, scrolling to bottom');
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
@@ -246,70 +99,87 @@
             appendMessage(message, true);
 
             try {
+                console.log('Sending message:', message);
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({
-                        message: message,
-                        conversation_id: currentConversationId
-                    })
+                    body: JSON.stringify({ message, conversation_id: currentConversationId })
                 });
 
                 if (!response.ok) {
-                    const errorData = await response.json();
-                    console.error('Server error:', errorData);
-                    throw new Error(errorData.detail?.message || 'Failed to process message');
+                    throw new Error('Network response was not ok');
                 }
 
-                const data = await response.json();
-                if (!data.response) {
-                    throw new Error('No response received from server');
-                }
-                
-                promptText = data.prompt;  // Store the prompt for the next message
-                toolsUsed = data.tools_used;  // Store the tools used
-                appendMessage(data.response);
-                
-                if (data.conversation_id) {
-                    currentConversationId = data.conversation_id;
-                }
-                
-                if (data.stats) {
-                    updateStats(data.stats);
+                console.log('Response received, starting to read...');
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        console.log('Stream complete');
+                        if (buffer.trim()) {
+                            try {
+                                const data = JSON.parse(buffer);
+                                if (data.response) {
+                                    appendMessage(data.response);
+                                }
+                            } catch (e) {
+                                console.error('Error parsing final buffer:', e);
+                            }
+                        }
+                        break;
+                    }
+                    
+                    const chunk = decoder.decode(value, { stream: true });
+                    console.log('Received chunk:', chunk);
+                    buffer += chunk;
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        if (line.trim()) {
+                            try {
+                                console.log('Processing line:', line);
+                                const data = JSON.parse(line);
+                                console.log('Parsed data:', data);
+                                if (data.error) {
+                                    console.log('Appending error message');
+                                    appendMessage(data.error, false, true);
+                                } else if (data.response) {
+                                    console.log('Appending response message');
+                                    appendMessage(data.response);
+                                }
+                                if (data.conversation_id) {
+                                    console.log('Setting conversation ID:', data.conversation_id);
+                                    currentConversationId = data.conversation_id;
+                                }
+                            } catch (e) {
+                                console.error('Error parsing line:', e);
+                                console.log('Problematic line:', line);
+                            }
+                        }
+                    }
                 }
             } catch (error) {
-                console.error('Error:', error);
-                appendMessage(`Error: ${error.message}`);
+                console.error('Error in sendMessage:', error);
+                appendMessage('I encountered an error while processing your message', false, true);
             }
         }
 
-        // Event listeners
-        sendButton.addEventListener('click', sendMessage);
-        messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
-        });
-
-        // File upload handling
-        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const fileInput = document.getElementById('conversationFile');
+        // Handle file upload
+        uploadButton.addEventListener('click', async () => {
             const file = fileInput.files[0];
-            if (!file) return;
+            if (!file) {
+                appendMessage('Please select a file first', false, true);
+                return;
+            }
 
             const formData = new FormData();
             formData.append('file', file);
-
-            const progressContainer = document.getElementById('uploadProgress');
-            const progressBar = progressContainer.querySelector('.progress-fill');
-            const progressStatus = progressContainer.querySelector('.progress-status');
-            const progressText = progressContainer.querySelector('.progress-text');
-
-            progressContainer.style.display = 'block';
-            progressBar.style.width = '0%';
-            progressText.textContent = '0%';
-            progressStatus.textContent = 'Starting...';
 
             try {
                 const response = await fetch('/upload', {
@@ -317,71 +187,26 @@
                     body: formData
                 });
 
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.detail || 'Upload failed');
-                }
-
                 const result = await response.json();
-                if (result.status === 'processing') {
-                    console.log('Starting SSE progress tracking');
-                    const eventSource = new EventSource('/upload-progress');
-                    
-                    eventSource.onmessage = (event) => {
-                        try {
-                            console.log('Raw SSE message:', event.data);
-                            const jsonStr = event.data.replace(/^data: /, '');
-                            const data = JSON.parse(jsonStr);
-                            
-                            if (data.status === 'processing') {
-                                const progress = Math.round((data.processed / data.total * 100));
-                                console.log('Updating progress:', progress + '%');
-                                progressBar.style.width = `${progress}%`;
-                                progressText.textContent = `${progress}% (${data.processed}/${data.total})`;
-                                
-                                const statusText = `Processing... Success: ${data.success_count}, Skipped: ${data.skipped_count}, Errors: ${data.error_count}, Chunks: ${data.chunks_processed}/${data.total_chunks}`;
-                                progressStatus.textContent = statusText;
-                            } else if (data.status === 'complete') {
-                                console.log('Processing complete');
-                                progressBar.style.width = '100%';
-                                progressText.textContent = '100%';
-                                progressStatus.textContent = 'Processing complete';
-                                updateStats(data.memory_stats);
-                                setTimeout(() => {
-                                    progressContainer.style.display = 'none';
-                                    eventSource.close();
-                                }, 2000);
-                            }
-                        } catch (e) {
-                            console.error('Error processing SSE message:', e);
-                            eventSource.close();
-                            progressStatus.textContent = 'Error processing update';
-                        }
-                    };
-                    
-                    eventSource.onerror = (error) => {
-                        if (progressBar.style.width === '100%') {
-                            eventSource.close();
-                            return;
-                        }
-                        console.error('SSE error:', error);
-                        progressStatus.textContent = 'Connection lost';
-                    };
+                if (response.ok) {
+                    appendMessage('File uploaded successfully. You can now chat with your conversation history.', false);
+                    updateStats(result);
                 } else {
-                    // Handle immediate completion
-                    progressBar.style.width = '100%';
-                    progressText.textContent = '100%';
-                    progressStatus.textContent = 'Processing complete';
-                    updateStats(result.memory_stats);
-                    setTimeout(() => {
-                        progressContainer.style.display = 'none';
-                    }, 2000);
+                    appendMessage(result.error || 'Error uploading file', false, true);
                 }
             } catch (error) {
                 console.error('Error:', error);
-                progressStatus.textContent = 'Error: ' + error.message;
+                appendMessage('Error uploading file', false, true);
             }
         });
+
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        sendButton.addEventListener('click', sendMessage);
     </script>
 </body>
 </html> 

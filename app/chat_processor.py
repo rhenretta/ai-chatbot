@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional, Tuple, Union, TypedDict, Annotated
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import uuid
 import re
@@ -24,7 +24,6 @@ from .models import ProcessingStats
 
 MAX_TOKENS = 6000  # Increased from 4000, still safe for text-embedding-ada-002 (max 8191)
 CHUNK_OVERLAP = 200  # Number of tokens to overlap between chunks
-MESSAGE_CHUNK_SIZE = 10  # Increased from 5 to reduce vector store fragmentation
 
 def count_tokens(text: str) -> int:
     """Count the number of tokens in a text string."""
@@ -85,6 +84,24 @@ class ConversationMemoryAgent:
         self.last_response_context = None
         self.user_model = {}
         
+        # Enhanced tone tracking
+        self.conversation_tone = {
+            "conversation_style": "casual_chat",  # Default to casual
+            "emotional_context": "friendly",
+            "response_approach": "chat_naturally",
+            "formality_level": "casual"
+        }
+        self.tone_history = []  # Track recent tones to detect patterns
+        self.tone_transition_threshold = 0.7  # Threshold for tone changes
+        
+        # Tone transition weights (how much each aspect influences tone changes)
+        self.tone_weights = {
+            "conversation_style": 0.3,
+            "emotional_context": 0.3,
+            "response_approach": 0.2,
+            "formality_level": 0.2
+        }
+        
         # Create LLMs with different creativity levels
         self.analysis_llm = ChatOpenAI(
             model="gpt-4",
@@ -138,6 +155,31 @@ For any given query, determine what information would be needed to provide a com
 
 Your task is to analyze this query: {query}
 
+Consider the following aspects:
+1. Query Style and Intent:
+   - Is this a casual chat or formal inquiry?
+   - Is the user reminiscing or seeking specific information?
+   - Are they looking for facts or more of a friendly discussion?
+   - What's the underlying social context of their question?
+
+2. Time Context:
+   - Is there a specific time period mentioned?
+   - Are they asking about a holiday or special event?
+   - Is it about a recent or past time period?
+   - How precise should the time filtering be?
+
+3. Emotional Context:
+   - What's the mood/vibe of the question?
+   - Is this a light conversation starter or serious inquiry?
+   - Are they sharing or seeking a moment of connection?
+   - What emotional response would feel natural?
+
+4. Response Approach:
+   - Should we chat like friends or provide formal information?
+   - Do they want precise details or more of a general reflection?
+   - Would they prefer highlights and impressions over exact quotes?
+   - How can we make this feel like a natural conversation?
+
 You must respond with a JSON object using exactly this structure:
 {{
     "search_strategy": {{
@@ -153,13 +195,19 @@ You must respond with a JSON object using exactly this structure:
         "opinions": false,          
         "knowledge": false,         
         "emotions": false          
+    }},
+    "tone_analysis": {{
+        "conversation_style": "",    
+        "emotional_context": "",     
+        "response_approach": "",     
+        "formality_level": ""       
     }}
 }}""")
 
         print(f"Query system message (first 100 chars): {query_system_message[:100]}")
         print(f"Query system message length: {len(query_system_message)}")
         
-        # Create and debug the query template
+        # Create query analysis prompt with proper structure
         self.query_analysis_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are an expert at analyzing questions to determine what context would be needed to provide a complete and accurate answer.
 
@@ -167,7 +215,13 @@ For any given query, determine what information would be needed to provide a com
 
 Your task is to analyze this query: {query}
 
-You must respond with a JSON object using exactly this structure:
+Consider the following aspects:
+1. Query Style and Intent
+2. Time Context
+3. Emotional Context
+4. Response Approach
+
+Respond with a JSON object using this structure:
 {{
     "search_strategy": {{
         "primary_aspects": [],      
@@ -182,9 +236,15 @@ You must respond with a JSON object using exactly this structure:
         "opinions": false,          
         "knowledge": false,         
         "emotions": false          
+    }},
+    "tone_analysis": {{
+        "conversation_style": "",    
+        "emotional_context": "",     
+        "response_approach": "",     
+        "formality_level": ""       
     }}
 }}"""),
-            ("human", "Please analyze the query and provide your JSON response.")
+            ("human", "{query}")
         ])
         
         print(f"Query template input variables: {self.query_analysis_prompt.input_variables}")
@@ -201,352 +261,608 @@ Focus on:
 4. Finding interesting connections across time
 5. Drawing novel insights while maintaining accuracy
 
-Format your response as JSON with these fields:
-{{
+Pay special attention to:
+1. Emotional Context:
+   - Overall emotional tone of conversations
+   - Changes in emotional state across interactions
+   - Topics that evoke strong emotions
+   - Patterns in emotional responses
+
+2. Conversation Style:
+   - Level of formality in interactions
+   - Use of humor or playfulness
+   - Depth of philosophical/personal discussions
+   - Preferred conversation topics
+
+3. Relationship Dynamics:
+   - Level of trust and openness
+   - Shared interests and experiences
+   - Evolution of rapport over time
+   - Communication preferences
+
+Base your insights ONLY on the provided memories. DO NOT make assumptions or invent details.
+
+Memories to analyze: {memories}
+
+Respond with a JSON object using this exact structure (no other text):
+{{{{
     "interests": [],        
     "preferences": [],      
     "behavioral_traits": [], 
     "emotional_patterns": [], 
     "recurring_themes": [], 
-    "key_insights": []     
-}}
-
-Base your insights ONLY on the provided memories. DO NOT make assumptions or invent details.
-
-Memories to analyze: {memories}"""),
-            ("human", "Please provide your analysis.")
+    "key_insights": [],
+    "conversation_style": {{{{
+        "formality_level": "",
+        "humor_presence": "",
+        "discussion_depth": "",
+        "preferred_topics": []
+    }}}},
+    "emotional_context": {{{{
+        "overall_tone": "",
+        "significant_emotions": [],
+        "emotional_triggers": [],
+        "comfort_topics": []
+    }}}}     
+}}}}""")
         ])
         
         print(f"Memory template input variables: {self.memory_synthesis_prompt.input_variables}")
         print(f"Memory template message types: {[type(m) for m in self.memory_synthesis_prompt.messages]}")
         
+        # Create response generation prompt that properly uses memories
         self.response_generation_prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                """You are a thoughtful AI assistant having a conversation. Your responses should be:
-1. STRICTLY based on actual retrieved memories when discussing past interactions
-2. Natural and conversational for general topics
-3. Helpful and specific even when no memories are available
+            ("system", """You are a thoughtful AI assistant having a natural conversation. Maintain this tone:
+- Conversation Style: {style}
+- Emotional Context: {emotion}
+- Response Approach: {approach}
+- Formality Level: {formality}
 
-CRITICAL RULES:
-1. NEVER invent or fabricate memories or past interactions
-2. When memories are found: 
-    a. Use them to provide personalized insights and specific suggestions
-    b. Draw connections between different interests/preferences found
-    c. Consider both explicit statements ("I love X") and implicit preferences
-3. When no memories are found: 
-    a. For personal queries: Ask relevant follow-up questions to gather information
-    b. For general queries: Provide thoughtful, general advice while gathering more context
-4. Always interpret queries from the USER's perspective first
-5. Keep conversation/document IDs in your working memory but DO NOT reference them in responses
+Guidelines:
+1. Keep responses natural and engaging
+2. Be honest about what you remember
+3. Share memories only when they add value to the conversation
+4. NEVER make up memories
+5. If memories aren't relevant, focus on the current conversation
+6. When sharing memories, include specific details to maintain authenticity
+7. Let the conversation flow naturally - don't force memory references
 
-For gift/preference queries:
-1. First use any found memories to identify:
-    a. Explicitly stated interests/hobbies
-    b. Positive reactions to topics/activities
-    c. Mentioned wishes or wants
-    d. Past discussions about preferences
-2. Then synthesize these into specific gift suggestions
-3. If suggesting something, explain why based on their interests
-4. Only ask follow-up questions if no relevant memories are found
-
-Example responses:
-
-With memories:
-"Based on your interests, I think you'd particularly enjoy [specific suggestion based on actual memories]. You've shown enthusiasm for [observed interest], so perhaps [related suggestion]. Given your interest in [another observed topic], you might also appreciate [another specific suggestion]."
-
-Without memories:
-"To suggest gifts that would really suit you, could you tell me more about:
-1. What kinds of activities do you enjoy most?
-2. Are there any hobbies or topics you're particularly passionate about?
-3. Do you prefer practical items or experiences?"
-
-Remember: 
-1. Stay focused on helping the user
-2. Be specific when you have information
-3. Ask good questions when you need more context
-4. Never pretend to have information you don't have"""
-            )),
-            ("human", (
-                """Query: {input}
+Remember: You have access to past conversations through the provided memories. Use them thoughtfully when they enrich the discussion."""),
+            ("human", """Query: {input}
 Analysis: {analysis}
-Retrieved Memories: {memories}
-Synthesis: {synthesis}"""
-            ))
+
+Relevant Memories:
+{memories}
+
+Memory Insights: {synthesis}
+
+Important: Focus on having a natural conversation. Use memories when they genuinely add value and help the discussion progress.""")
         ])
         
         # Add message-specific prompt storage
         self.message_prompts = {}  # Store prompts by message ID
 
     async def _analyze_query(self, query: str) -> Dict[str, Any]:
-        """Analyze the query to determine search strategy and required context."""
+        """Analyze the query to determine search strategy and context requirements."""
         try:
-            print("\n=== Query Analysis Debug ===")
-            print(f"Input query: {query}")
-            print(f"Creating chain with prompt type: {type(self.query_analysis_prompt)}")
+            # Streamlined analysis prompt
+            analysis = ChatPromptTemplate.from_messages([
+                ("system", """Analyze the query to extract key information for memory search.
+Output a JSON object with:
+{{
+    "search_strategy": {{
+        "primary_aspects": [],      # Main concepts to search for
+        "semantic_variations": [],  # Related terms/phrases
+        "temporal_scope": "",      # Time period if mentioned
+        "context_type": ""         # Type of information needed
+    }}  ,
+    "required_context": {{
+        "interests": false,         # Whether interests are relevant
+        "preferences": false,       # Whether preferences matter
+        "knowledge": false,         # Whether knowledge/facts needed
+        "emotions": false          # Whether emotional context matters
+    }},
+    "tone_analysis": {{
+        "conversation_style": "",    # e.g., "casual_chat", "formal_inquiry" 
+        "emotional_context": "",     # e.g., "light_hearted", "reflective"
+        "response_approach": "",     # e.g., "chat_naturally", "provide_details"
+        "formality_level": ""       # e.g., "casual", "semi_formal"
+    }}
+}}"""),
+                ("human", "{query}")
+            ])
             
-            # Create chain
-            chain = self.query_analysis_prompt | self.analysis_llm
-            print("Chain created successfully")
+            chain = analysis | self.analysis_llm
+            result = await chain.ainvoke({"query": query})
             
-            # Debug input preparation
-            input_dict = {"query": query}
-            print(f"Input dictionary: {input_dict}")
-            print(f"Expected variables: {self.query_analysis_prompt.input_variables}")
-            print(f"Provided variables: {list(input_dict.keys())}")
-            
-            # Execute chain
-            print("Executing chain...")
-            result = await chain.ainvoke(input_dict)
-            print(f"Chain execution complete. Result type: {type(result)}")
-            
-            # Extract content
+            # Extract and validate analysis
             if hasattr(result, 'content'):
-                content = result.content
-                print("Extracted content from AIMessage")
+                analysis_text = result.content
+            elif isinstance(result, dict):
+                analysis_text = result.get('content', str(result))
             else:
-                content = str(result)
-                print("Converted result to string")
-            print(f"Content: {content}")
-            
-            # Parse JSON
+                analysis_text = str(result)
+                
             try:
-                print("Attempting to parse JSON...")
-                analysis = json.loads(content)
-                print("JSON parsing successful")
-                print(f"Analysis structure: {list(analysis.keys())}")
+                # Parse JSON response
+                analysis_dict = json.loads(analysis_text)
+                
+                # Validate required fields
+                required_fields = ['search_strategy', 'required_context', 'tone_analysis']
+                if not all(field in analysis_dict for field in required_fields):
+                    print("Warning: Analysis missing required fields")
+                    # Add defaults for missing fields
+                    if 'search_strategy' not in analysis_dict:
+                        analysis_dict['search_strategy'] = {"primary_aspects": [query]}
+                    if 'required_context' not in analysis_dict:
+                        analysis_dict['required_context'] = {"interests": False, "preferences": False}
+                    if 'tone_analysis' not in analysis_dict:
+                        analysis_dict['tone_analysis'] = {
+                            "conversation_style": "casual_chat",
+                            "emotional_context": "neutral",
+                            "response_approach": "chat_naturally",
+                            "formality_level": "casual"
+                        }
+                    elif isinstance(analysis_dict['tone_analysis'], str):
+                        # Convert string tone_analysis to proper structure
+                        tone_text = analysis_dict['tone_analysis']
+                        analysis_dict['tone_analysis'] = {
+                            "conversation_style": "casual_chat",
+                            "emotional_context": "neutral",
+                            "response_approach": "chat_naturally",
+                            "formality_level": "casual"
+                        }
+                        print(f"Converted string tone_analysis: {tone_text}")
+                        
+                return analysis_dict
+                
             except json.JSONDecodeError as e:
-                print(f"JSON parsing failed: {str(e)}")
-                print(f"Failed content: {content}")
-                # Use fallback analysis
-                analysis = {
+                print(f"Error parsing analysis JSON: {str(e)}")
+                # Return basic analysis if parsing fails
+                return {
                     "search_strategy": {
-                        "primary_aspects": ["interests", "hobbies", "preferences", "wishlist"],
-                        "semantic_variations": [
-                            "I love", "I enjoy", "I like", "I want",
-                            "my favorite", "I wish", "I need", "I've been wanting"
-                        ],
-                        "temporal_scope": "all",
-                        "context_type": "synthesis"
+                        "primary_aspects": [query],
+                        "semantic_variations": [],
+                        "temporal_scope": "",
+                        "context_type": "general"
                     },
                     "required_context": {
-                        "interests": True,
-                        "preferences": True,
-                        "behaviors": True,
-                        "opinions": True,
-                        "knowledge": True,
-                        "emotions": True
+                        "interests": False,
+                        "preferences": False,
+                        "knowledge": False,
+                        "emotions": False
+                    },
+                    "tone_analysis": {
+                        "conversation_style": "casual_chat",
+                        "emotional_context": "neutral",
+                        "response_approach": "chat_naturally",
+                        "formality_level": "casual"
                     }
                 }
-                print("Using fallback analysis")
-            
-            print(f"Final analysis: {json.dumps(analysis, indent=2)}")
-            return analysis
             
         except Exception as e:
             print(f"Error in query analysis: {str(e)}")
-            print(f"Error type: {type(e)}")
             import traceback
-            print(f"Full traceback:\n{traceback.format_exc()}")
-            print("Using error fallback analysis")
+            print(traceback.format_exc())
+            # Return basic analysis on error
             return {
-                "search_strategy": {
-                    "primary_aspects": ["interests", "preferences"],
-                    "semantic_variations": ["I enjoy", "I like", "I want"],
-                    "temporal_scope": "all",
-                    "context_type": "synthesis"
-                },
-                "required_context": {
-                    "interests": True,
-                    "preferences": True,
-                    "behaviors": True,
-                    "opinions": False,
-                    "knowledge": False,
-                    "emotions": True
+                "search_strategy": {"primary_aspects": [query]},
+                "required_context": {"interests": False, "preferences": False},
+                "tone_analysis": {
+                    "conversation_style": "casual_chat",
+                    "emotional_context": "neutral",
+                    "response_approach": "chat_naturally",
+                    "formality_level": "casual"
                 }
             }
 
     async def _synthesize_memories(self, memories: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Synthesize insights from multiple memories."""
+        """Synthesize insights from retrieved memories."""
         try:
-            if not memories:
-                print("No memories to synthesize")
+            # Only synthesize if we have enough memories
+            if not memories or len(memories) < 2:
                 return {}
                 
-            print("\n=== Memory Synthesis Debug ===")
-            print(f"Number of memories to process: {len(memories)}")
+            # Streamlined synthesis prompt
+            synthesis = ChatPromptTemplate.from_messages([
+                ("system", """Analyze the provided memories to extract key insights.
+Output a JSON object with:
+- key_themes: list of main themes
+- emotional_context: overall emotional tone
+- notable_patterns: any recurring patterns"""),
+                ("human", "Analyze these memories: {memories}")
+            ])
             
-            # Format memories for synthesis
-            formatted_memories = []
-            for memory in memories:
-                formatted_memories.append({
-                    'text': memory.get('text', ''),
-                    'timestamp': memory.get('timestamp', ''),
-                    'similarity': memory.get('similarity', 0)
-                })
+            chain = synthesis | self.synthesis_llm
+            result = await chain.ainvoke({
+                "memories": json.dumps([{
+                    "text": m.get("text", ""),
+                    "timestamp": m.get("timestamp", "")
+                } for m in memories], ensure_ascii=False)
+            })
             
-            print(f"First memory sample: {json.dumps(formatted_memories[0] if formatted_memories else {}, indent=2)}")
-            print(f"Memory synthesis prompt variables: {self.memory_synthesis_prompt.input_variables}")
-            
-            # Debug input preparation
-            input_dict = {"memories": json.dumps(formatted_memories, ensure_ascii=False)}
-            print(f"Input dictionary keys: {list(input_dict.keys())}")
-            print(f"Expected variables: {self.memory_synthesis_prompt.input_variables}")
-            
-            # Create and execute chain
-            print("Creating synthesis chain...")
-            chain = self.memory_synthesis_prompt | self.synthesis_llm
-            print("Executing synthesis chain...")
-            result = await chain.ainvoke(input_dict)
-            print(f"Synthesis result type: {type(result)}")
-            
-            # Parse the response
-            synthesis_text = result.content if hasattr(result, 'content') else str(result)
-            print(f"Raw synthesis text (first 100 chars): {synthesis_text[:100]}")
+            # Extract and validate synthesis
+            if hasattr(result, 'content'):
+                synthesis_text = result.content
+            elif isinstance(result, dict):
+                synthesis_text = result.get('content', str(result))
+            else:
+                synthesis_text = str(result)
             
             try:
-                print("Attempting to parse synthesis JSON...")
-                synthesis = json.loads(synthesis_text)
-                print(f"Synthesis structure: {list(synthesis.keys())}")
-                return synthesis
+                # Parse JSON response
+                synthesis_dict = json.loads(synthesis_text)
+                
+                # Validate required fields
+                required_fields = ['key_themes', 'emotional_context', 'notable_patterns']
+                if not all(field in synthesis_dict for field in required_fields):
+                    print("Warning: Synthesis missing required fields")
+                    # Add defaults for missing fields
+                    if 'key_themes' not in synthesis_dict:
+                        synthesis_dict['key_themes'] = []
+                    if 'emotional_context' not in synthesis_dict:
+                        synthesis_dict['emotional_context'] = "neutral"
+                    if 'notable_patterns' not in synthesis_dict:
+                        synthesis_dict['notable_patterns'] = []
+                    
+                return synthesis_dict
+                
             except json.JSONDecodeError as e:
-                print(f"JSON parsing failed: {str(e)}")
-                print("Falling back to text parsing")
-                synthesis = {
-                    'interests': [],
-                    'preferences': [],
-                    'behavioral_traits': [],
-                    'emotional_patterns': [],
-                    'recurring_themes': [],
-                    'key_insights': []
+                print(f"Error parsing synthesis JSON: {str(e)}")
+                # Return basic synthesis if parsing fails
+                return {
+                    "key_themes": [],
+                    "emotional_context": "neutral",
+                    "notable_patterns": []
                 }
-                return synthesis
             
         except Exception as e:
             print(f"Error in memory synthesis: {str(e)}")
-            print(f"Error type: {type(e)}")
             import traceback
-            print(f"Full traceback:\n{traceback.format_exc()}")
+            print(traceback.format_exc())
+            # Return empty synthesis on error
             return {}
 
-    def _search_conversations(self, query: str, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Execute semantic search based on query analysis."""
+    def _semantic_retriever(self, query: str, analysis: Dict[str, Any], top_k: int = 20) -> List[Dict[str, Any]]:
+        """Retrieve results based on semantic similarity."""
+        results = []
         try:
-            print(f"Executing semantic search for: {query}")
-            all_results = []
-            search_strategy = analysis.get('search_strategy', {})
-            required_context = analysis.get('required_context', {})
-            
-            # Primary search based on main query
             query_embedding = self.embeddings_manager.get_embedding(query)
             if query_embedding:
                 base_results = self.vector_store.search_similar(
                     query_vector=query_embedding,
-                    top_k=5,
-                    min_similarity=0.6  # Lower threshold for initial search
+                    top_k=top_k,
+                    min_similarity=0.5
                 )
                 if base_results:
-                    verified_base = self._verify_and_format_results(base_results)
-                    all_results.extend(verified_base)
-            
-            # Search for each primary aspect with query context
-            for aspect in search_strategy.get('primary_aspects', []):
-                # Create contextual queries that combine the original query with the aspect
-                contextual_queries = [
-                    f"When discussing {query}, mentioned {aspect}",
-                    f"In context of {query}, expressed {aspect}",
-                    f"While talking about {query}, showed {aspect}"
-                ]
-                
-                for aspect_query in contextual_queries:
-                    aspect_embedding = self.embeddings_manager.get_embedding(aspect_query)
-                    if aspect_embedding:
-                        aspect_results = self.vector_store.search_similar(
-                            query_vector=aspect_embedding,
-                            top_k=3,
-                            min_similarity=0.6
-                        )
-                        if aspect_results:
-                            verified_aspect = self._verify_and_format_results(aspect_results)
-                            all_results.extend(verified_aspect)
-            
-            # Search semantic variations with context preservation
-            for variation in search_strategy.get('semantic_variations', []):
-                # Create variations that maintain the original query context
-                contextual_variations = [
-                    variation,
-                    f"{variation} that could be a gift",
-                    f"{variation} as a present",
-                    f"{variation} to receive"
-                ]
-                
-                for var_query in contextual_variations:
-                    variation_embedding = self.embeddings_manager.get_embedding(var_query)
-                    if variation_embedding:
-                        variation_results = self.vector_store.search_similar(
-                            query_vector=variation_embedding,
-                            top_k=3,
-                            min_similarity=0.55  # Lower threshold for variations
-                        )
-                        if variation_results:
-                            verified_variation = self._verify_and_format_results(variation_results)
-                            all_results.extend(verified_variation)
-            
-            # Additional context searches based on required_context
-            if any(required_context.values()):
-                context_queries = []
-                
-                # Build rich context queries
-                if required_context.get('interests'):
-                    context_queries.extend([
-                        "things I'm passionate about",
-                        "activities I enjoy",
-                        "what excites me most"
-                    ])
-                if required_context.get('preferences'):
-                    context_queries.extend([
-                        "things I prefer",
-                        "what I look for in",
-                        "qualities I appreciate"
-                    ])
-                if required_context.get('behaviors'):
-                    context_queries.extend([
-                        "how I spend my time",
-                        "what I do often",
-                        "my typical activities"
-                    ])
-                if required_context.get('emotions'):
-                    context_queries.extend([
-                        "things that make me happy",
-                        "what I get excited about",
-                        "experiences I value"
-                    ])
-                
-                for context_query in context_queries:
-                    context_embedding = self.embeddings_manager.get_embedding(context_query)
-                    if context_embedding:
-                        context_results = self.vector_store.search_similar(
-                            query_vector=context_embedding,
-                            top_k=3,
-                            min_similarity=0.55
-                        )
-                        if context_results:
-                            verified_context = self._verify_and_format_results(context_results)
-                            all_results.extend(verified_context)
-            
-            # Deduplicate and sort results
-            unique_results = self._deduplicate_results(all_results)
-            
-            # Sort by similarity and limit results
-            unique_results.sort(key=lambda x: x['similarity'], reverse=True)
-            final_results = unique_results[:10]  # Increased limit for comprehensive context
-            
-            print(f"Found {len(final_results)} verified conversations")
-            return final_results
-            
+                    results.extend(self._verify_and_format_results(base_results))
         except Exception as e:
-            print(f"Error in semantic search: {str(e)}")
+            print(f"Error in semantic retriever: {str(e)}")
             import traceback
             print(f"Traceback: {traceback.format_exc()}")
+        return results
+
+    def _temporal_retriever(self, query: str, analysis: Dict[str, Any], top_k: int = 20) -> List[Dict[str, Any]]:
+        """Retrieve results based on temporal relevance."""
+        results = []
+        temporal_scope = analysis.get('search_strategy', {}).get('temporal_scope', '')
+        if not temporal_scope:
+            return results
+
+        try:
+            # Create a temporal query embedding
+            temporal_query = f"Conversation from {temporal_scope}"
+            temporal_embedding = self.embeddings_manager.get_embedding(temporal_query)
+            
+            if temporal_embedding:
+                # Get potential matches using vector similarity
+                temporal_results = self.vector_store.search_similar(
+                    query_vector=temporal_embedding,
+                    top_k=100,  # Get more results to filter
+                    min_similarity=0.3  # Lower threshold for temporal matches
+                )
+                
+                if temporal_results:
+                    # Post-process results to score temporal relevance
+                    for result in temporal_results:
+                        timestamp = result.get('timestamp', '')
+                        if not timestamp:
+                            continue
+                        
+                        try:
+                            conv_date = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                            temporal_score = self._calculate_temporal_score(conv_date, temporal_scope)
+                            if temporal_score > 0:
+                                result['temporal_score'] = temporal_score
+                                results.append(result)
+                        except ValueError:
+                            continue
+
+                    # Sort by temporal score and take top_k
+                    results.sort(key=lambda x: x.get('temporal_score', 0), reverse=True)
+                    results = results[:top_k]
+
+            print(f"Temporal retriever found {len(results)} results for scope: {temporal_scope}")
+            return self._verify_and_format_results(results)
+            
+        except Exception as e:
+            print(f"Error in temporal retriever: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            return []
+
+    def _tonal_retriever(self, query: str, analysis: Dict[str, Any], top_k: int = 20) -> List[Dict[str, Any]]:
+        """Retrieve results based on conversational tone and style."""
+        results = []
+        tone_analysis = analysis.get('tone_analysis', {})
+        style = tone_analysis.get('conversation_style', '')
+        emotion = tone_analysis.get('emotional_context', '')
+        
+        if not (style or emotion):
+            return results
+
+        # Create tone-focused query
+        tone_query = f"Conversation showing {style} style and {emotion} emotional context"
+        tone_embedding = self.embeddings_manager.get_embedding(tone_query)
+        if tone_embedding:
+            tone_results = self.vector_store.search_similar(
+                query_vector=tone_embedding,
+                top_k=top_k,
+                min_similarity=0.6
+            )
+            if tone_results:
+                results.extend(self._verify_and_format_results(tone_results))
+        return results
+
+    def _calculate_temporal_score(self, conv_date: datetime, temporal_scope: str) -> float:
+        """Calculate temporal relevance score based on conversation date and query scope."""
+        now = datetime.now()
+        
+        # Extract time indicators from temporal scope
+        is_around = "around" in temporal_scope.lower()
+        window_size = timedelta(weeks=4 if is_around else 2)
+        
+        # Calculate base score based on temporal distance
+        if "recent" in temporal_scope.lower():
+            target_date = now
+        else:
+            # For specific dates/holidays, you would parse them here
+            # For now, using a simple approach
+            target_date = conv_date
+        
+        time_diff = abs((conv_date - target_date).total_seconds())
+        max_diff = window_size.total_seconds()
+        
+        if time_diff > max_diff:
+            return 0.0
+        
+        # Score decreases linearly with distance from target date
+        return 1.0 - (time_diff / max_diff)
+
+    def _search_conversations(self, query: str, analysis: Dict[str, Any], max_results: int = 20) -> List[Dict[str, Any]]:
+        """Execute multi-retriever search and evaluate results holistically."""
+        try:
+            print(f"Executing multi-retriever search for: {query}")
+            
+            # Get candidate pool from all retrievers
+            semantic_results = self._semantic_retriever(query, analysis)
+            temporal_results = self._temporal_retriever(query, analysis)
+            tonal_results = self._tonal_retriever(query, analysis)
+            
+            # Combine all results, removing duplicates
+            all_results = []
+            seen_ids = set()
+            
+            for result in semantic_results + temporal_results + tonal_results:
+                if result['conversation_id'] not in seen_ids:
+                    all_results.append(result)
+                    seen_ids.add(result['conversation_id'])
+            
+            print(f"Found {len(all_results)} total candidate results")
+            
+            # Create evaluation chain
+            evaluation_prompt = ChatPromptTemplate.from_messages([
+                ("system", '''You are having a natural, friendly conversation with someone. When they ask about specific conversations or memories, keep the same warm, casual tone you've been using.
+
+Your task is to evaluate each conversation for:
+
+1. How well it matches what we're chatting about:
+   - Is this the specific memory they're thinking of?
+   - Does it add something interesting to our chat?
+   - Would it help continue our conversation naturally?
+
+2. When it happened:
+   - If they mention a specific time, is this from then?
+   - For "around" a certain time, is it close enough?
+   - Would mentioning this timing feel natural in our chat?
+
+3. The feeling and style:
+   - Does this match our current conversation's vibe?
+   - Would sharing this maintain our chat's flow?
+   - Would this feel like a natural thing to bring up?
+
+4. Overall fit:
+   - Would mentioning this enrich our conversation?
+   - Would it help us connect over shared memories?
+   - Would it feel natural to bring up?
+
+Think about this conversation:
+Query: {query}
+Analysis: {analysis}
+Timestamp: {timestamp}
+Content: {content}
+
+Respond with a JSON object using this exact structure (no other text):
+{{"relevance": {{"semantic_match": 0.95, "temporal_match": 0.85, "tonal_match": 0.75, "overall_score": 0.85, "reasoning": "This is exactly what we were talking about, and it happened just when they mentioned"}}}}''')
+            ])
+            
+            evaluation_chain = evaluation_prompt | self.analysis_llm | JsonOutputParser()
+            
+            # Evaluate each result
+            evaluated_results = []
+            for result in all_results:
+                try:
+                    eval_input = {
+                        "query": query,
+                        "analysis": json.dumps(analysis, indent=2),
+                        "timestamp": result.get('timestamp', ''),
+                        "content": result.get('text', '')
+                    }
+                    
+                    print(f"\nEvaluating result {result['conversation_id']}")
+                    evaluation = evaluation_chain.invoke(eval_input)
+                    print(f"Evaluation successful: {evaluation}")
+                    
+                    # Add evaluation scores to result
+                    result.update(evaluation['relevance'])
+                    evaluated_results.append(result)
+                    
+                except Exception as chain_error:
+                    print("\nError in evaluation chain:")
+                    print(f"Error type: {type(chain_error).__name__}")
+                    print(f"Error message: {str(chain_error)}")
+                    import traceback
+                    print("\nFull stack trace:")
+                    print(traceback.format_exc())
+                    print("\nEvaluation input that caused error:")
+                    for key, value in eval_input.items():
+                        print(f"\n{key}:")
+                        print(value)
+            
+            # Sort by overall score
+            evaluated_results.sort(key=lambda x: x.get('overall_score', 0), reverse=True)
+            
+            print(f"Evaluation complete. Returning top {min(max_results, len(evaluated_results))} results")
+            return evaluated_results[:max_results]
+            
+        except Exception as e:
+            print(f"Error in conversation search: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            return []
+
+    def _filter_results(self, results: List[Dict[str, Any]], analysis: Dict[str, Any], query: str) -> List[Dict[str, Any]]:
+        """Filter results using AI evaluation."""
+        try:
+            print("\n=== Starting AI Filtering ===")
+            print(f"Number of results to evaluate: {len(results)}")
+            print(f"Original query: {query}")
+            
+            filtered_results = []
+            
+            print("Creating evaluation chain...")
+            # Create a simpler template for testing
+            evaluation_prompt = ChatPromptTemplate.from_messages([
+                ("system", '''You are an expert at evaluating the relevance of conversation snippets to a user's query, with a strong focus on temporal relevance. Your task is to carefully analyze each conversation and determine if it's truly relevant to what the user is asking about.
+
+Consider these key aspects in order of importance:
+
+1. Temporal Relevance (CRITICAL):
+   - Analyze the query's temporal scope:
+     * Is there a specific time period mentioned?
+     * What does "around" mean in this context?
+     * How precise does the time match need to be?
+   
+   - Consider relative time periods:
+     * When someone says "around" a date, it usually implies ±2-4 weeks
+     * The more significant the event/date, the wider the relevant time window
+     * Recent dates may need more precision than older ones
+   
+   - Evaluate temporal proximity:
+     * "exact" = The specific time period mentioned
+     * "close" = Within the broader timeframe implied by "around"
+     * "related" = Within the general season or period
+     * "unrelated" = Clearly outside the relevant timeframe
+
+2. Content Relevance:
+   - Does this conversation actually answer what the user is asking?
+   - Is it directly related or only tangentially related?
+   - Does it provide valuable context or insight?
+   - For personal queries about "what was on my mind":
+     * Does it reveal thoughts, concerns, or interests?
+     * Does it show emotional state or mindset?
+     * Does it capture activities or plans from that time?
+
+3. Query Intent Match:
+   - Does this match what the user is really trying to learn?
+   - Is it aligned with the style of information they're seeking?
+   - Would this help create the kind of response they're looking for?
+
+IMPORTANT: The meaning of "around" depends on context - consider the significance of the event/date and how precise the user seems to want the time match to be.
+
+Respond with a JSON object using this exact structure (no other text):
+{{
+    "is_relevant": true,
+    "relevance_score": 0.85,
+    "temporal_match": "close",
+    "content_match": "direct",
+    "reasoning": "Conversation is within the broader timeframe implied by 'around' in the query"
+}}'''),
+                ("human", "Query: {query}\nAnalysis: {analysis}\nTimestamp: {timestamp}\nContent: {content}")
+            ])
+            
+            print("\nDebug: Template Analysis")
+            print(f"Template type: {type(evaluation_prompt)}")
+            print(f"Template messages: {evaluation_prompt.messages}")
+            print(f"Raw input variables: {evaluation_prompt.input_variables}")
+            
+            evaluation_chain = evaluation_prompt | self.analysis_llm | JsonOutputParser()
+            
+            print("\nDebug: Evaluation Chain Structure")
+            print(f"Chain components: {[type(component).__name__ for component in evaluation_chain.steps]}")
+            
+            for i, result in enumerate(results, 1):
+                print(f"\nEvaluating result {i}/{len(results)}")
+                
+                eval_input = {
+                    "query": query,  # Use the original query instead of the result text
+                    "analysis": json.dumps(analysis, indent=2),
+                    "timestamp": result.get('timestamp', ''),
+                    "content": result.get('text', '')
+                }
+                
+                print("\nDebug: Evaluation Input")
+                print(f"Original query: {query}")
+                print(f"Keys provided: {list(eval_input.keys())}")
+                print(f"Expected keys: {evaluation_prompt.input_variables}")
+                print(f"Query length: {len(eval_input['query'])}")
+                print(f"Analysis length: {len(eval_input['analysis'])}")
+                print(f"Content sample: {eval_input['content'][:100]}...")
+                
+                try:
+                    print("\nAttempting evaluation...")
+                    eval_result = evaluation_chain.invoke(eval_input)
+                    print(f"Evaluation successful: {eval_result}")
+                    
+                    if eval_result.get('is_relevant', False):
+                        result.update(eval_result)
+                        filtered_results.append(result)
+                        
+                except Exception as chain_error:
+                    print("\nError in evaluation chain:")
+                    print(f"Error type: {type(chain_error).__name__}")
+                    print(f"Error message: {str(chain_error)}")
+                    import traceback
+                    print("\nFull stack trace:")
+                    print(traceback.format_exc())
+                    print("\nEvaluation chain components:")
+                    print(f"Chain steps: {[type(component).__name__ for component in evaluation_chain.steps]}")
+                    print("\nEvaluation input that caused error:")
+                    for key, value in eval_input.items():
+                        print(f"\n{key}:")
+                        print(value)
+            
+            filtered_results.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+            print(f"\nFiltering complete. Found {len(filtered_results)} relevant results")
+            return filtered_results
+            
+        except Exception as e:
+            print("\nError in AI filtering:")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            import traceback
+            print("\nFull traceback:")
+            traceback.print_exc()
             return []
 
     def _verify_and_format_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -582,471 +898,256 @@ Synthesis: {synthesis}"""
             
         return verified_results
 
+    def _should_update_tone(self, new_tone: Dict[str, str], message_type: str = "normal") -> Tuple[bool, float]:
+        """Determine if tone should be updated based on current context and history."""
+        if not self.tone_history:
+            return True, 1.0
+            
+        # Calculate tone difference score
+        difference_score = 0
+        total_weight = 0
+        
+        for key, weight in self.tone_weights.items():
+            if key in new_tone and key in self.conversation_tone:
+                current = self.conversation_tone[key]
+                proposed = new_tone[key]
+                
+                # Higher weight for drastic changes
+                if any(signal in proposed for signal in ['formal', 'serious', 'emotional', 'technical']):
+                    weight *= 1.5
+                
+                # Check for tone continuity
+                if current != proposed:
+                    difference_score += weight
+                total_weight += weight
+        
+        normalized_difference = difference_score / total_weight if total_weight > 0 else 0
+        
+        # Adjust threshold based on message type
+        adjusted_threshold = self.tone_transition_threshold
+        if message_type == "question":
+            adjusted_threshold *= 0.8  # More willing to change for questions
+        elif message_type == "emotional":
+            adjusted_threshold *= 0.6  # Even more willing to change for emotional content
+        
+        # Consider recent tone history
+        if len(self.tone_history) >= 2:
+            recent_changes = sum(1 for i in range(len(self.tone_history)-1) 
+                               if self.tone_history[i] != self.tone_history[i+1])
+            if recent_changes >= 2:
+                adjusted_threshold *= 1.2  # More resistant to change if tone has been changing frequently
+        
+        return normalized_difference > adjusted_threshold, normalized_difference
+
+    def _update_conversation_tone(self, new_tone: Dict[str, str], message_type: str = "normal"):
+        """Update conversation tone with smoother transitions."""
+        should_update, difference_score = self._should_update_tone(new_tone, message_type)
+        
+        if should_update:
+            # Store current tone in history
+            self.tone_history.append(self.conversation_tone.copy())
+            if len(self.tone_history) > 5:  # Keep last 5 tones
+                self.tone_history.pop(0)
+            
+            # Update tone
+            for key, value in new_tone.items():
+                if key in self.conversation_tone:
+                    self.conversation_tone[key] = value
+            
+            print(f"Tone updated (difference: {difference_score:.2f})")
+            print(f"New tone: {self.conversation_tone}")
+        else:
+            print(f"Tone maintained (difference: {difference_score:.2f} below threshold)")
+            
+        return should_update
+
+    def _verify_conversation_participants(self, text: str) -> bool:
+        """Verify that the conversation involves the user and assistant."""
+        # Simple check for now - could be enhanced with more sophisticated parsing
+        return True  # Accept all conversations for now
+
+    def _format_conversation_snippet(self, text: str, timestamp: str = '') -> str:
+        """Format a conversation snippet with timestamp."""
+        formatted_text = text.strip()
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                formatted_timestamp = dt.strftime('%B %d, %Y')
+                formatted_text = f"[{formatted_timestamp}]\n\n{formatted_text}"
+            except ValueError:
+                # If timestamp parsing fails, just use the raw timestamp
+                formatted_text = f"[{timestamp}]\n\n{formatted_text}"
+        return formatted_text
+
     async def process_message(self, message: str, conversation_id: Optional[str] = None) -> dict:
-        """Process a message using enhanced multi-stage reasoning."""
+        """Process a message and return the response with context."""
+        print(f"\n=== Processing Chat Request ===")
+        print(f"Message: {message}")
         try:
-            print(f"Processing message with enhanced reasoning: {message}")
             message_id = str(uuid.uuid4())
             
             # Stage 1: Query Analysis
             query_analysis = await self._analyze_query(message)
             print(f"Query analysis: {query_analysis}")
             
-            # Initialize search result variables
-            direct_results = []
-            pattern_results = []
-            unique_results = []
+            # Update conversation tone if needed
+            message_type = "normal"
+            if "?" in message:
+                message_type = "question"
+            elif any(word in message.lower() for word in ['feel', 'sad', 'happy', 'angry', 'love', 'hate']):
+                message_type = "emotional"
+            
+            if 'tone_analysis' in query_analysis:
+                print(f"Updating tone with: {query_analysis['tone_analysis']}")
+                self._update_conversation_tone(query_analysis['tone_analysis'], message_type)
             
             # Stage 2: Memory Retrieval
-            search_results = self._search_conversations(message, query_analysis)
+            search_results = self._search_conversations(message, query_analysis, max_results=10)
+            unique_results = []
             if search_results:
-                direct_results = search_results
-                unique_results = self._deduplicate_results(search_results)
+                # Only keep highly relevant results
+                unique_results = [r for r in search_results if r.get('overall_score', 0) > 0.8]
+                unique_results = unique_results[:5]  # Keep only top 5 most relevant
+                print(f"Filtered to {len(unique_results)} highly relevant results")
             
             # Stage 3: Memory Synthesis
             synthesis = {}
-            if unique_results:
+            if len(unique_results) >= 2:
                 synthesis = await self._synthesize_memories(unique_results)
             
+            # Format memories into a clear, readable format
+            formatted_memories = []
+            for result in unique_results:
+                formatted_memory = f"""
+Timestamp: {result.get('timestamp', '')}
+Conversation:
+{result.get('text', '')}
+Relevance: {result.get('overall_score', 0)} - {result.get('reasoning', '')}
+
+"""
+                formatted_memories.append(formatted_memory)
+            
+            memories_text = "No relevant memories found" if not formatted_memories else "\n".join(formatted_memories)
+            
             # Stage 4: Response Generation
-            response = self.response_generation_prompt | self.response_llm
-            result = await response.ainvoke({
+            response = ChatPromptTemplate.from_messages([
+                ("system", """You are a thoughtful AI assistant having a natural conversation. Maintain this tone:
+- Conversation Style: {style}
+- Emotional Context: {emotion}
+- Response Approach: {approach}
+- Formality Level: {formality}
+
+Guidelines:
+1. Keep responses natural and engaging
+2. Be honest about what you remember
+3. Share memories only when they add value to the conversation
+4. NEVER make up memories
+5. If memories aren't relevant, focus on the current conversation
+6. When sharing memories, include specific details to maintain authenticity
+7. Let the conversation flow naturally - don't force memory references
+
+Remember: You have access to past conversations through the provided memories. Use them thoughtfully when they enrich the discussion."""),
+                ("human", """Query: {input}
+Analysis: {analysis}
+
+Relevant Memories:
+{memories}
+
+Memory Insights: {synthesis}
+
+Important: Focus on having a natural conversation. Use memories when they genuinely add value and help the discussion progress.""")
+            ])
+            
+            # Debug: Print the full formatted prompt
+            print("\n=== Response Generation Prompt ===")
+            debug_input = {
                 "input": message,
                 "analysis": json.dumps(query_analysis, ensure_ascii=False),
-                "memories": json.dumps(unique_results, ensure_ascii=False) if unique_results else "No relevant memories found",
-                "synthesis": json.dumps(synthesis, ensure_ascii=False)
-            })
+                "memories": memories_text,
+                "synthesis": json.dumps(synthesis, ensure_ascii=False) if synthesis else "No synthesis performed",
+                "style": self.conversation_tone['conversation_style'],
+                "emotion": self.conversation_tone['emotional_context'],
+                "approach": self.conversation_tone['response_approach'],
+                "formality": self.conversation_tone['formality_level']
+            }
+            
+            formatted_prompt = response.format_messages(**debug_input)
+            print("\nSystem Message:")
+            print(formatted_prompt[0].content)
+            print("\nHuman Message:")
+            print(formatted_prompt[1].content)
+            print("\n=== End Response Generation Prompt ===\n")
+            
+            chain = response | self.response_llm
+            result = await chain.ainvoke(debug_input)
             
             # Extract and format response
-            response_text = result.content if hasattr(result, 'content') else str(result)
-            formatted_response = self._format_response_for_ui(response_text)
+            if hasattr(result, 'content'):
+                response_text = result.content
+            elif isinstance(result, dict) and 'content' in result:
+                response_text = result['content']
+            elif isinstance(result, str):
+                response_text = result
+            else:
+                response_text = str(result)
+                if response_text.startswith('messages=[') and ']' in response_text:
+                    try:
+                        ai_msg_start = response_text.rfind("AIMessage(content='") + 19
+                        ai_msg_end = response_text.rfind("')")
+                        if ai_msg_start > 18 and ai_msg_end > ai_msg_start:
+                            response_text = response_text[ai_msg_start:ai_msg_end]
+                    except Exception as e:
+                        print(f"Error extracting AI message: {str(e)}")
+                        response_text = "I apologize, but I encountered an error processing your request."
             
-            # Format prompt details for UI
-            prompt_details = {
-                "Query Analysis": query_analysis,
-                "Memory Search": {
-                    "Direct Results": len(direct_results),
-                    "Pattern Results": len(pattern_results),
-                    "Total Unique Results": len(unique_results),
-                    "Retrieved Memories": [
-                        {
-                            "text": result["text"],
-                            "timestamp": result.get("timestamp", ""),
-                            "similarity": result.get("similarity", 0)
-                        }
-                        for result in unique_results
-                    ]
+            # Debug info
+            debug_info = {
+                "stages": {
+                    "query_analysis": query_analysis,
+                    "memory_retrieval": {
+                        "results_count": len(unique_results),
+                        "top_result_score": unique_results[0].get("overall_score", 0) if unique_results else 0
+                    },
+                    "synthesis_performed": bool(synthesis),
+                    "current_tone": self.conversation_tone
                 },
-                "Memory Synthesis": synthesis if synthesis else "No synthesis performed",
-                "Response Generation": {
-                    "Input": message,
-                    "Analysis": query_analysis,
-                    "Context Used": bool(unique_results)
+                "performance": {
+                    "timestamp": datetime.now().isoformat(),
+                    "conversation_id": conversation_id,
+                    "message_id": message_id
                 }
             }
             
-            # Store prompt details for this message
-            self.message_prompts[message_id] = prompt_details
-            
             return {
-                "response": formatted_response,
+                "response": response_text,
                 "context_used": bool(unique_results),
                 "synthesis_performed": bool(synthesis),
-                "query_type": query_analysis.get('Query Type', 'unknown'),
                 "conversation_id": conversation_id,
                 "message_id": message_id,
-                "prompt": json.dumps(prompt_details, indent=2, ensure_ascii=False)
+                "debug_info": debug_info
             }
             
         except Exception as e:
-            print(f"Error in enhanced process_message: {str(e)}")
+            print("\nError in process_message:")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
             import traceback
-            print(f"Traceback: {traceback.format_exc()}")
+            print("\nFull traceback:")
+            print(traceback.format_exc())
             return {
                 "response": "I encountered an error while processing your message.",
                 "context_used": False,
                 "error": str(e),
                 "conversation_id": conversation_id,
                 "message_id": str(uuid.uuid4()),
-                "prompt": None
+                "debug_info": {
+                    "error": {
+                        "type": type(e).__name__,
+                        "message": str(e),
+                        "traceback": traceback.format_exc()
+                    }
+                }
             }
-    
-    def _deduplicate_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Deduplicate search results while preserving order and relevance."""
-        seen = set()
-        unique_results = []
-        
-        for result in results:
-            conversation_id = result.get('conversation_id', 'unknown')
-            if conversation_id not in seen:
-                seen.add(conversation_id)
-                unique_results.append(result)
-        
-        return unique_results
-    
-    def _update_user_model(self, analysis: Dict[str, Any], synthesis: Dict[str, Any]):
-        """Update the user model with new insights."""
-        try:
-            # Update interaction patterns
-            if 'query_type' in analysis:
-                self.user_model.setdefault('interaction_patterns', {})
-                query_type = analysis['query_type']
-                self.user_model['interaction_patterns'][query_type] = self.user_model['interaction_patterns'].get(query_type, 0) + 1
-            
-            # Update behavioral traits
-            if 'behavioral_traits' in synthesis:
-                self.user_model.setdefault('behavioral_traits', {})
-                for trait in synthesis['behavioral_traits']:
-                    self.user_model['behavioral_traits'][trait] = self.user_model['behavioral_traits'].get(trait, 0) + 1
-            
-            # Update areas of interest
-            if 'interests' in synthesis:
-                self.user_model.setdefault('interests', {})
-                for interest in synthesis['interests']:
-                    self.user_model['interests'][interest] = self.user_model['interests'].get(interest, 0) + 1
-            
-            # Update emotional patterns
-            if 'emotional_patterns' in synthesis:
-                self.user_model.setdefault('emotional_patterns', [])
-                self.user_model['emotional_patterns'].extend(synthesis.get('emotional_patterns', []))
-            
-            # Trim history if needed
-            if len(self.user_model.get('emotional_patterns', [])) > 100:
-                self.user_model['emotional_patterns'] = self.user_model['emotional_patterns'][-100:]
-            
-        except Exception as e:
-            print(f"Error updating user model: {str(e)}")
-
-    async def process_conversation_upload(self, conversation_data: Dict[str, Any], stats: Optional[ProcessingStats] = None) -> Tuple[str, ProcessingStats]:
-        """Process a conversation upload, storing each chat as a complete unit."""
-        if stats is None:
-            stats = ProcessingStats()
-            
-        conversation_id = conversation_data.get('id', str(uuid.uuid4()))
-        print(f"Processing conversation {conversation_id}")
-        skipped_details = []
-        
-        try:
-            # Extract all messages from the chat
-            messages = []
-            for message in conversation_data.get('mapping', {}).values():
-                if message.get('message') and isinstance(message['message'], dict):
-                    content = message['message'].get('content', {})
-                    text = self._extract_text_from_content(content)
-                    
-                    if text:
-                        messages.append({
-                            'text': text,
-                            'role': message['message'].get('author', {}).get('role', 'user'),
-                            'timestamp': datetime.fromtimestamp(
-                                message['message'].get('create_time', 0)
-                            ).isoformat()
-                        })
-            
-            if messages:
-                print(f"Found {len(messages)} messages in conversation {conversation_id}")
-                # Update stats with message count for this conversation
-                stats.start_processing_conversation(len(messages))
-                
-                # Process messages in chunks to avoid token limits
-                for i in range(0, len(messages), MESSAGE_CHUNK_SIZE):
-                    chunk = messages[i:i + MESSAGE_CHUNK_SIZE]
-                    print(f"Processing chunk {i//MESSAGE_CHUNK_SIZE + 1} of conversation {conversation_id}")
-                    
-                    # Create embedding for the chunk
-                    chat_text = "\n".join([f"{msg['role']}: {msg['text']}" for msg in chunk])
-                    
-                    # Check token count and chunk if necessary
-                    if count_tokens(chat_text) > MAX_TOKENS:
-                        text_chunks = chunk_text(chat_text)
-                        print(f"Splitting chunk into {len(text_chunks)} text chunks")
-                        for idx, text_chunk in enumerate(text_chunks):
-                            chunk_embedding = await self.embeddings_manager.get_embedding_async(text_chunk)
-                            chunk_id = f"{conversation_id}_{i}_{idx}"
-                            print(f"Storing text chunk {idx + 1} as {chunk_id}")
-                            
-                            # Store the chunk
-                            await self.vector_store.add_vector_async(
-                                key=f"chat:{chunk_id}",
-                                vector=chunk_embedding,
-                                metadata={
-                                    'conversation_id': conversation_id,
-                                    'chunk_id': chunk_id,
-                                    'messages': chunk,
-                                    'text': text_chunk,
-                                    'timestamp': chunk[0]['timestamp'],
-                                    'last_used': None,
-                                    'is_chunk': True,
-                                    'total_chunks': len(text_chunks)
-                                }
-                            )
-                            # Update progress after each chunk
-                            stats.update_progress()
-                            print(f"Progress: {stats.chunks_processed}/{stats.total_chunks} chunks")
-                    else:
-                        # Store the chunk as is
-                        chunk_embedding = await self.embeddings_manager.get_embedding_async(chat_text)
-                        chunk_id = f"{conversation_id}_{i}"
-                        print(f"Storing chunk as {chunk_id}")
-                        
-                        await self.vector_store.add_vector_async(
-                            key=f"chat:{chunk_id}",
-                            vector=chunk_embedding,
-                            metadata={
-                                'conversation_id': conversation_id,
-                                'chunk_id': chunk_id,
-                                'messages': chunk,
-                                'text': chat_text,
-                                'timestamp': chunk[0]['timestamp'],
-                                'last_used': None,
-                                'is_chunk': False
-                            }
-                        )
-                        # Update progress after each chunk
-                        stats.update_progress()
-                        print(f"Progress: {stats.chunks_processed}/{stats.total_chunks} chunks")
-                
-                stats.update(processed=1)
-                print(f"Completed processing conversation {conversation_id}")
-            else:
-                print(f"No messages found in conversation {conversation_id}")
-                stats.update(skipped=1)
-                skipped_details.append({
-                    "conversation_id": conversation_id,
-                    "reason": "No messages found"
-                })
-                
-        except Exception as e:
-            print(f"Error processing conversation {conversation_id}: {str(e)}")
-            stats.update(errors=1)
-            raise
-        
-        return conversation_id, stats
-    
-    def _extract_text_from_content(self, content: Any) -> str:
-        """Extract text from various content formats."""
-        if isinstance(content, str):
-            return content
-        elif isinstance(content, dict):
-            if "parts" in content:
-                parts = content["parts"]
-                if isinstance(parts, list):
-                    return " ".join(str(part) for part in parts if isinstance(part, (str, int, float)))
-            elif "text" in content:
-                return content["text"]
-        return ""
-    
-    def _format_conversation_snippet(self, text: str, timestamp: str = "") -> str:
-        """Format a conversation snippet with proper labels, formatting, and timestamp."""
-        # Add timestamp header if provided
-        formatted_lines = []
-        if timestamp:
-            try:
-                # Convert timestamp to readable format
-                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                formatted_lines.append(f"[Conversation from {dt.strftime('%B %d, %Y at %I:%M %p')}]")
-                formatted_lines.append("")  # Add blank line after timestamp
-            except:
-                formatted_lines.append(f"[Conversation from {timestamp}]")
-                formatted_lines.append("")  # Add blank line after timestamp
-        
-        # Replace labels and split into lines
-        # Note: From AI's perspective, "Me" is the assistant and "You" is the user
-        lines = text.replace("assistant:", "Me:").replace("user:", "You:").split('\n')
-        current_speaker = None
-        current_message = []
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-                
-            if line.startswith("Me:") or line.startswith("You:"):
-                # If we have a previous message, add it
-                if current_message:
-                    formatted_lines.append(" ".join(current_message))
-                    formatted_lines.append("")  # Add blank line between messages
-                current_speaker = line[:3]  # "Me:" or "You:"
-                current_message = [line]
-            else:
-                # If no speaker prefix and we have a current speaker, append to current message
-                if current_speaker:
-                    current_message.append(line)
-                else:
-                    # If no current speaker, treat as a new message with default speaker
-                    if current_message:
-                        formatted_lines.append(" ".join(current_message))
-                        formatted_lines.append("")
-                    current_message = [line]
-        
-        # Add the last message if exists
-        if current_message:
-            formatted_lines.append(" ".join(current_message))
-        
-        # Ensure proper spacing
-        return "\n".join(formatted_lines).strip()
-
-    def _extract_relevant_clip(self, text: str, query: str) -> str:
-        """Extract the most relevant part of a conversation based on the query."""
-        # Split into message pairs
-        messages = []
-        current_pair = []
-        
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-                
-            if line.startswith(("User:", "Assistant:", "Me:", "You:")):
-                if current_pair and len(current_pair) == 2:
-                    messages.append("\n".join(current_pair))
-                    current_pair = []
-                current_pair.append(line)
-            elif current_pair:
-                current_pair[-1] += " " + line
-        
-        if current_pair:
-            messages.append("\n".join(current_pair))
-        
-        # If only one message pair, return it formatted
-        if len(messages) <= 1:
-            return text
-        
-        # Find most relevant message pair
-        most_relevant = None
-        highest_similarity = -1
-        
-        for msg_pair in messages:
-            similarity = self.embeddings_manager.compute_similarity(query, msg_pair)
-            if similarity > highest_similarity:
-                highest_similarity = similarity
-                most_relevant = msg_pair
-        
-        return most_relevant if most_relevant else text
-
-    def _verify_conversation_participants(self, text: str) -> bool:
-        """Verify that a conversation is between the AI assistant and the user."""
-        # Look for patterns indicating AI-user interaction
-        has_user = bool(re.search(r'\b(user:|User:|you:|You:)', text))
-        has_assistant = bool(re.search(r'\b(assistant:|Assistant:|me:|Me:)', text))
-        
-        # Check for third-party mentions or other participant indicators
-        third_party_indicators = [
-            'friend', 'they', 'them', 'he said', 'she said', 'they said',
-            'someone', 'people', 'others', 'we played', 'I played with'
-        ]
-        
-        has_third_party = any(indicator in text.lower() for indicator in third_party_indicators)
-        
-        # Return True only if we have both user and assistant messages and no third-party indicators
-        return has_user and has_assistant and not has_third_party
-
-    def _rerank_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Rerank search results considering active memories and relevance."""
-        scored_results = []
-        current_time = datetime.now()
-        
-        for result in results:
-            score = result.get('similarity', 0)
-            memory_id = f"{result['conversation_id']}:{result.get('chunk_id', '')}"
-            
-            # Boost score if memory is active
-            if memory_id in self.active_memories:
-                time_since_used = (current_time - self.active_memories[memory_id]["last_used"]).total_seconds()
-                recency_boost = max(0, 1 - (time_since_used / 3600))  # Boost decreases over time
-                score += recency_boost * 0.5
-            
-            scored_results.append((score, result))
-        
-        # Sort by score and return results
-        scored_results.sort(key=lambda x: x[0], reverse=True)
-        return [result for _, result in scored_results]
-        
-    def _update_active_memory(self, memory: Dict[str, Any]):
-        """Update the active memories with a recently used memory."""
-        memory_id = f"{memory['conversation_id']}:{memory.get('chunk_id', '')}"
-        self.active_memories[memory_id] = {
-            "memory": memory,
-            "last_used": datetime.now()
-        }
-    
-    def _get_active_memories(self, query: str) -> List[Dict[str, Any]]:
-        """Retrieve active memories that might be relevant to the query."""
-        current_time = datetime.now()
-        active_memories = []
-        
-        for memory_id, memory_data in self.active_memories.items():
-            # Check if memory is still active (within last hour)
-            if (current_time - memory_data["last_used"]).total_seconds() < 3600:
-                active_memories.append(memory_data["memory"])
-        
-        return active_memories
-
-    def _format_response_for_ui(self, text: str) -> str:
-        """Format the response text for proper display in the UI."""
-        # Split into paragraphs
-        paragraphs = text.split('\n\n')
-        formatted_lines = []
-        in_conversation = False
-        current_speaker = None
-        
-        for paragraph in paragraphs:
-            paragraph = paragraph.strip()
-            if not paragraph:
-                continue
-            
-            # Handle conversation references (preserve conversation_id)
-            if '(conversation_id:' in paragraph:
-                # Ensure the conversation_id appears on its own line
-                parts = paragraph.split('(conversation_id:', 1)
-                if len(parts) == 2:
-                    id_part = parts[1].split(')', 1)
-                    if len(id_part) == 2:
-                        formatted_lines.extend([
-                            parts[0].strip(),
-                            f"(conversation_id:{id_part[0]})",
-                            id_part[1].strip() if id_part[1].strip() else ""
-                        ])
-                        continue
-            
-            # Handle conversation headers
-            if paragraph.startswith('[Conversation from'):
-                if formatted_lines and formatted_lines[-1]:
-                    formatted_lines.append('')  # Add blank line before header
-                formatted_lines.append(paragraph)
-                formatted_lines.append('')  # Add blank line after header
-                in_conversation = True
-                current_speaker = None
-                continue
-            
-            # Handle messages in conversation
-            if paragraph.startswith(('Me:', 'You:')):
-                if current_speaker:
-                    formatted_lines.append('')  # Add blank line between messages
-                formatted_lines.append(paragraph)
-                current_speaker = paragraph[:3]
-                continue
-            
-            # Handle regular paragraphs
-            if in_conversation and current_speaker:
-                # Continue previous message
-                formatted_lines[-1] += " " + paragraph
-            else:
-                # New paragraph
-                if formatted_lines and formatted_lines[-1]:
-                    formatted_lines.append('')  # Add blank line between paragraphs
-                formatted_lines.append(paragraph)
-                in_conversation = False
-                current_speaker = None
-        
-        # Join with newlines and clean up any excessive spacing
-        formatted_text = '\n'.join(formatted_lines)
-        
-        # Clean up excessive newlines while preserving intentional spacing
-        while '\n\n\n' in formatted_text:
-            formatted_text = formatted_text.replace('\n\n\n', '\n\n')
-        
-        return formatted_text.strip()
 
 class ChatProcessor:
     def __init__(self, vector_store: VectorStore, embeddings_manager: EmbeddingsManager, api_key: str):
@@ -1132,23 +1233,25 @@ class ChatProcessor:
     
     async def process_message(self, message: str, conversation_id: Optional[str] = None) -> dict:
         """Process a message and return the response with context."""
+        print(f"Processing chat request: {message}")
         try:
-            # Only log once at the start
-            print(f"Processing chat request: {message}")
-            
-            # Delegate to memory agent for processing
-            result = await self.memory_agent.process_message(message, conversation_id)
-            
-            # Return the result without additional processing
-            return result
-            
+            # Delegate to memory agent
+            return await self.memory_agent.process_message(message, conversation_id)
         except Exception as e:
-            print(f"Error in chat processor process_message: {str(e)}")
+            print(f"Error in process_message: {str(e)}")
             import traceback
             print(f"Traceback: {traceback.format_exc()}")
             return {
                 "response": "I encountered an error while processing your message.",
                 "context_used": False,
                 "error": str(e),
-                "conversation_id": conversation_id
+                "conversation_id": conversation_id,
+                "message_id": str(uuid.uuid4()),
+                "debug_info": {
+                    "error": {
+                        "type": type(e).__name__,
+                        "message": str(e),
+                        "traceback": traceback.format_exc()
+                    }
+                }
             }
